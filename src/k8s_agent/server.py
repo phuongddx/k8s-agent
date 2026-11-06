@@ -1,6 +1,7 @@
 """The MCP server: tools `diagnose` and `open_pr` over streamable HTTP at /mcp, bearer-token
 protected, plus an unauthenticated GET /healthz for the readiness probe."""
 
+import dataclasses
 import hmac
 import json
 import logging
@@ -38,6 +39,13 @@ from k8s_agent.tools.loki import LokiClient
 from k8s_agent.tools.toolbox import Toolbox
 
 OPEN_PR_SECONDS = 120
+# The graph stops this long before the outer limit, so its worker finishes and releases the service
+# lock while the caller still gets the timeout error.
+GRAPH_MARGIN_SECONDS = 10
+# Every outbound client has a short connect timeout and a bounded read, so a hung peer cannot pin the lock.
+KUBE_TIMEOUT = httpx2.Timeout(30, connect=5)
+LOKI_TIMEOUT = httpx2.Timeout(30, connect=5)
+GITHUB_TIMEOUT = httpx2.Timeout(20, connect=5)
 ALLOWED_HOSTS = [
     "k8s-agent.k8s-agent.svc",
     "k8s-agent.k8s-agent.svc:*",
@@ -138,10 +146,12 @@ def build_service(settings: Settings) -> AgentService:
     workspace = Workspace(
         Path(settings.repo_dir), settings.repo_url, token=settings.bot_gh_token, max_bytes=b.log_max_bytes
     )
-    cluster = ClusterTools(HttpKubeApi.in_cluster(), log_max_lines=b.log_max_lines, log_max_bytes=b.log_max_bytes)
+    cluster = ClusterTools(
+        HttpKubeApi.in_cluster(timeout=KUBE_TIMEOUT), log_max_lines=b.log_max_lines, log_max_bytes=b.log_max_bytes
+    )
     loki = LokiClient(
         settings.loki_url,
-        httpx2.Client(timeout=15),
+        httpx2.Client(timeout=LOKI_TIMEOUT),
         default_hours=b.loki_default_hours,
         max_hours=b.loki_max_hours,
         max_lines=b.log_max_lines,
@@ -159,12 +169,17 @@ def build_service(settings: Settings) -> AgentService:
         workspace=workspace,
         renderer=renderer,
         store=store,
-        budgets=b,
+        budgets=dataclasses.replace(b, graph_seconds=max(b.graph_seconds - GRAPH_MARGIN_SECONDS, b.graph_seconds / 2)),
     )
     graph = build_graph(deps)
-    github = GitHubClient(settings.repo, settings.bot_gh_token, httpx2.Client(timeout=30))
+    github = GitHubClient(settings.repo, settings.bot_gh_token, httpx2.Client(timeout=GITHUB_TIMEOUT))
     opener = PrOpener(workspace, renderer, store, github, settings.bot_login, settings.bot_email)
     return AgentService(lambda question: run_diagnosis(graph, deps, question), opener.open_pr)
+
+
+def build_uvicorn_config(app: ASGIApp, port: int) -> uvicorn.Config:
+    # log_config=None: uvicorn would otherwise install its own INFO handlers and drop our JSON formatter.
+    return uvicorn.Config(app, host="0.0.0.0", port=port, log_config=None, access_log=False)  # noqa: S104
 
 
 def main() -> None:
@@ -176,7 +191,7 @@ def main() -> None:
         sys.exit(2)
     app = build_app(build_service(settings), settings.mcp_bearer_token, settings.budgets.graph_seconds)
     log_event("server.start", status="listening")
-    uvicorn.run(app, host="0.0.0.0", port=settings.port, log_config=None, access_log=False)  # noqa: S104
+    uvicorn.Server(build_uvicorn_config(app, settings.port)).run()
 
 
 if __name__ == "__main__":

@@ -63,7 +63,7 @@ class HttpKubeApi:
 
     @classmethod
     def in_cluster(
-        cls, sa_dir: Path = SA_DIR, env: Mapping[str, str] = os.environ, timeout: float = 15.0
+        cls, sa_dir: Path = SA_DIR, env: Mapping[str, str] = os.environ, timeout: float | httpx2.Timeout = 15.0
     ) -> "HttpKubeApi":
         host = env["KUBERNETES_SERVICE_HOST"]
         port = env.get("KUBERNETES_SERVICE_PORT", "443")
