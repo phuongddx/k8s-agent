@@ -1,0 +1,102 @@
+name: Release
+
+# After CI passes on a push to main: build and push ghcr.io/phuongddx/k8s-agent:<sha>, then open
+# a promotion PR in phuongddx/vps192-k8s-config. Pattern copied from phuongddx/llm-gateway's
+# deploy.yml (build job, workflow_run gate, newTag rewrite); unlike it, this workflow stops at
+# opening the PR. The owner reviews and merges it there.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+  SERVICE: k8s-agent
+  IMAGE_REPO: ghcr.io/phuongddx/k8s-agent
+  CONFIG_REPO: phuongddx/vps192-k8s-config
+
+jobs:
+  build:
+    # Only CI runs triggered by a push to main of this repository; PR and fork runs never release.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check the source SHA
+        run: '[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push immutable image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE_REPO }}:${{ env.SOURCE_SHA }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+
+  promote:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: vps192-promotion
+    timeout-minutes: 10
+    permissions: {}
+    env:
+      GH_TOKEN: ${{ secrets.VPS192_CONFIG_PROMOTION_TOKEN }}
+    steps:
+      - name: Open vps192 config promotion PR
+        run: |
+          set -euo pipefail
+          config="$RUNNER_TEMP/vps192-k8s-config"
+          gh auth setup-git
+          gh repo clone "$CONFIG_REPO" "$config"
+          overlay="apps/$SERVICE/vps192/kustomization.yaml"
+          if [ ! -f "$config/$overlay" ]; then
+            echo "::notice title=Promotion skipped::$overlay does not exist in $CONFIG_REPO yet; no PR opened for $IMAGE_REPO:$SOURCE_SHA."
+            exit 0
+          fi
+          git -C "$config" config user.name "github-actions[bot]"
+          git -C "$config" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="promote/$SERVICE-$SOURCE_SHA"
+          git -C "$config" switch -c "$branch"
+          python3 -c 'import pathlib,re,sys; path=pathlib.Path(sys.argv[1]); text=path.read_text(); pattern=r"(?m)^(\s*- name: "+re.escape(sys.argv[2])+r"\n\s*newTag: ).+$"; updated,count=re.subn(pattern,lambda match:match.group(1)+sys.argv[3],text); assert count == 1, count; path.write_text(updated)' "$config/$overlay" "$IMAGE_REPO" "$SOURCE_SHA"
+          git -C "$config" add "$overlay"
+          git -C "$config" commit -m "promote($SERVICE): $SOURCE_SHA"
+          # --force keeps workflow re-runs idempotent on this branch.
+          git -C "$config" push --force origin "$branch"
+          if [ -z "$(gh pr list --repo "$CONFIG_REPO" --head "$branch" --json url --jq '.[]')" ]; then
+            gh pr create \
+              --repo "$CONFIG_REPO" \
+              --base main \
+              --head "$branch" \
+              --title "promote($SERVICE): $SOURCE_SHA" \
+              --body "Source commit: ${{ github.server_url }}/${{ github.repository }}/commit/$SOURCE_SHA"
+          fi

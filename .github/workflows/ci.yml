@@ -46,10 +46,27 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: uv run pytest
 
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker build --platform linux/amd64 -t k8s-agent:ci .
+      - name: Smoke-test the image
+        run: |
+          docker run --rm --entrypoint sh k8s-agent:ci -c \
+            'test "$(id -u)" = 10001 && git --version && kustomize version && python -c "import k8s_agent.server"'
+          set +e
+          docker run --rm k8s-agent:ci
+          status=$?
+          set -e
+          test "$status" -eq 2
+
   # Single required status check for branch protection; avoids pinning job names.
   ci-passed:
     if: always()
-    needs: [lint, test]
+    needs: [lint, test, docker-build]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every CI job succeeded
