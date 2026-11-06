@@ -73,3 +73,71 @@ def test_unreachable_and_5xx_raise_unavailable():
 def test_bad_logql_is_a_query_error():
     with pytest.raises(LokiQueryError, match="parse error"):
         _client(lambda r: httpx2.Response(400, text="parse error at line 1")).query("{")
+
+
+def test_html_or_empty_200_is_unavailable():
+    with pytest.raises(LokiUnavailable):
+        _client(lambda r: httpx2.Response(200, text="<html>")).query('{a="b"}', now=NOW)
+
+
+def test_non_object_200_body_is_unavailable():
+    with pytest.raises(LokiUnavailable):
+        _client(lambda r: httpx2.Response(200, json=[])).query('{a="b"}', now=NOW)
+
+
+def test_redirect_is_unavailable():
+    with pytest.raises(LokiUnavailable):
+        _client(lambda r: httpx2.Response(302, headers={"location": "/elsewhere"})).query('{a="b"}', now=NOW)
+
+
+def test_three_element_values_keep_timestamp_and_line():
+    body = _streams(["1762336780000000000", "a", {"k": "v"}])
+    out = _client(lambda r: httpx2.Response(200, json=body)).query('{a="b"}', now=NOW)
+    assert out["entries"][0]["ts"] == "2025-11-05T09:59:40.000+00:00"
+    assert out["entries"][0]["line"] == "a"
+
+
+def test_non_numeric_timestamp_is_unavailable():
+    body = _streams(["abc", "a"])
+    with pytest.raises(LokiUnavailable):
+        _client(lambda r: httpx2.Response(200, json=body)).query('{a="b"}', now=NOW)
+
+
+def test_matrix_result_is_rejected_as_not_a_log_query():
+    body = {
+        "status": "success",
+        "data": {"resultType": "matrix", "result": [{"metric": {}, "values": [[1762336790, "3"]]}]},
+    }
+    with pytest.raises(LokiQueryError, match="only log queries"):
+        _client(lambda r: httpx2.Response(200, json=body)).query('count_over_time({a="b"}[5m])', now=NOW)
+
+
+def test_vector_result_is_rejected_as_not_a_log_query():
+    body = {
+        "status": "success",
+        "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1762336790, "3"]}]},
+    }
+    with pytest.raises(LokiQueryError, match="only log queries"):
+        _client(lambda r: httpx2.Response(200, json=body)).query('rate({a="b"}[5m])', now=NOW)
+
+
+def test_non_integer_hours_is_a_query_error():
+    with pytest.raises(LokiQueryError, match="hours and limit must be integers"):
+        _client(lambda r: httpx2.Response(200, json=_streams())).query('{a="b"}', hours="x", now=NOW)
+
+
+def test_fractional_hours_send_integer_start():
+    seen = {}
+
+    def handler(request):
+        seen.update(dict(request.url.params))
+        return httpx2.Response(200, json=_streams())
+
+    _client(handler).query('{a="b"}', hours=1.5, now=NOW)
+    assert seen["start"].isdigit()
+    assert int(seen["end"]) - int(seen["start"]) == 3600 * 10**9
+
+
+def test_429_is_unavailable():
+    with pytest.raises(LokiUnavailable):
+        _client(lambda r: httpx2.Response(429, text="slow down")).query('{a="b"}', now=NOW)
