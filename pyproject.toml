@@ -1,0 +1,50 @@
+[project]
+name = "k8s-agent"
+version = "0.1.0"
+description = "Read-only Kubernetes troubleshooting agent for vps192, served over MCP"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "anyio==4.16.0",
+    "httpx2==2.16.0",
+    "langgraph==1.2.20",
+    "mcp==2.3.0",
+    "openai==3.46.0",
+    "pydantic==2.14.3",
+    "starlette==1.10.0",
+    "uvicorn==0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.4",
+]
+
+[project.scripts]
+k8s-agent = "k8s_agent.server:main"
+
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/k8s_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["S101", "S603", "S607"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/k8s_agent/prompts.py" = ["E501"]
+"tests/**" = ["S105", "S106", "S107", "S108"]
+"eval/**" = ["S105", "S106", "S107", "S108"]
