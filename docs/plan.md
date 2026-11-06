@@ -14,7 +14,7 @@
 
 ## Global Constraints
 
-- Repository: `phuongddx/k8s-agent`, **public**, local path `/Users/ddphuong/Projects/next-labs/k8s-agent`, branch `main`.
+- Repository: `phuongddx/k8s-agent`, **public**, local checkout `<k8s-agent>`, branch `main`.
 - Python `==3.12.*`; dependencies pinned exactly in `pyproject.toml` and locked in `uv.lock`; `uv sync --frozen` everywhere after Task 1.
 - Package layout `src/k8s_agent/`; tests in `tests/`; manual eval in `evals/`.
 - Interface: MCP over streamable HTTP at `/mcp`. Exactly two tools: `diagnose(question: str)` and `open_pr(proposal_id: str)`. Plus `GET /healthz`, unauthenticated.
@@ -109,7 +109,7 @@ brew install uv
 uv --version
 python3.12 --version
 kustomize version
-git -C /Users/ddphuong/Projects/next-labs/k8s-agent config --local --get commit.gpgsign
+git -C <k8s-agent> config --local --get commit.gpgsign
 ```
 Expected: `uv 0.13.x` (any 0.13 release reads the lock), `Python 3.12.x`, a kustomize version line (the render tests use whatever is on PATH locally; CI and the image pin v5.7.1), and `true`. If `kustomize` is missing, run `brew install kustomize`.
 
@@ -117,15 +117,15 @@ Expected: `uv 0.13.x` (any 0.13 release reads the lock), `Python 3.12.x`, a kust
 
 Run:
 ```bash
-cd /Users/ddphuong/Projects/next-labs/k8s-agent
-git -C /Users/ddphuong/Projects/next-labs/vps192-k8s-config show 323f9fb:docs/features/k8s-troubleshoot-agent/spec.md \
+cd <k8s-agent>
+git -C <config-repo> show 323f9fb:docs/features/k8s-troubleshoot-agent/spec.md \
   | diff - <(tail -n +7 docs/spec.md) && echo identical
 head -5 docs/spec.md
 ```
-Expected: `identical`, then a comment header naming `docs/features/k8s-troubleshoot-agent/spec.md` and commit `323f9fb (323f9fb3770d379a91f5a61e967c4f07710bf0b9)`. If `docs/spec.md` is missing, recreate it:
+Expected: the public copy is redacted on purpose, so `diff` prints only the redacted passages (the public-copy note, secret names, and the T9, OpenClaw-token and gate 3a text) instead of `identical`; then a comment header naming `docs/features/k8s-troubleshoot-agent/spec.md` and commit `323f9fb (323f9fb3770d379a91f5a61e967c4f07710bf0b9)`. If `docs/spec.md` is missing, recreate it:
 ```bash
 { printf '<!--\nCopied from phuongddx/vps192-k8s-config, path docs/features/k8s-troubleshoot-agent/spec.md,\nat commit 323f9fb (323f9fb3770d379a91f5a61e967c4f07710bf0b9), on 2026-11-06.\nThe copy in vps192-k8s-config is the source of truth; update this copy if that file changes.\n-->\n\n'; \
-  git -C /Users/ddphuong/Projects/next-labs/vps192-k8s-config show 323f9fb:docs/features/k8s-troubleshoot-agent/spec.md; } > docs/spec.md
+  git -C <config-repo> show 323f9fb:docs/features/k8s-troubleshoot-agent/spec.md; } > docs/spec.md
 ```
 
 - [ ] **Step 3: Write the failing smoke test**
@@ -273,7 +273,7 @@ evals/results/
 
 Run:
 ```bash
-cd /Users/ddphuong/Projects/next-labs/k8s-agent
+cd <k8s-agent>
 uv lock --check
 uv sync --frozen
 uv run pytest tests/test_package.py
@@ -785,7 +785,7 @@ Used by the unit tests and by the manual eval in eval/run_eval.py. Values are sy
 
 from dataclasses import dataclass, field
 
-NODE = "srv1980192"
+NODE = "node-1"
 NODE_ALLOCATABLE = "7935Mi"
 SHA_API = "4f1d2c3b" * 5
 SHA_GW = "7e6d5c4b" * 5
@@ -1476,7 +1476,7 @@ def test_oomkilled_shows_limit_usage_and_node_headroom():
     assert t.top_pods("llm-gateway") == [{"pod": "llm-gateway-5b8c4-q7w2e", "cpu_m": 20, "memory_mi": 121}]
     [node] = t.top_nodes()
     assert node == {
-        "node": "srv1980192",
+        "node": "node-1",
         "cpu_m": 900,
         "memory_mi": 4900,
         "allocatable_memory_mi": 7935,
@@ -5728,7 +5728,7 @@ git commit -m "test: manual eval harness over six recorded scenarios"
 
 The owner runs this in their own terminal, so the key never enters the agent's context:
 ```bash
-cd /Users/ddphuong/Projects/next-labs/k8s-agent
+cd <k8s-agent>
 read -rs ZAI_API_KEY && export ZAI_API_KEY
 uv run python -m evals.run_eval
 unset ZAI_API_KEY
@@ -5752,7 +5752,7 @@ Every step marked **(approval)** changes GitHub. Get the owner's explicit go-ahe
 
 Run:
 ```bash
-cd /Users/ddphuong/Projects/next-labs/k8s-agent
+cd <k8s-agent>
 git status --short && git log --oneline | head -15
 uv run pytest && uv run ruff check . && uv run ruff format --check .
 gh auth status 2>&1 | grep -E "Logged in|Token scopes"
@@ -5916,6 +5916,30 @@ Plan 3 owns these items. Plan 2 deliberately leaves them out:
 - OpenClaw: `mcp.servers.k8s-agent` with `url: http://k8s-agent.k8s-agent.svc:8080/mcp`, `transport: streamable-http`, `requestTimeoutMs: 180000`, and `headers: {Authorization: "Bearer ${K8S_AGENT_MCP_TOKEN}"}` sourced from OpenClaw's env. Confirm OpenClaw's client works against a **stateless, JSON-response** server, and that its Host header is `k8s-agent.k8s-agent.svc:8080` (in `ALLOWED_HOSTS`). Add the `vps192-diagnose` skill, which also formats the Telegram reply.
 - The promotion overlay `apps/k8s-agent/vps192/kustomization.yaml` with `images: - name: ghcr.io/phuongddx/k8s-agent / newTag: <sha>`. Once it exists, every merge to `main` here opens a promotion PR.
 - The live checks the spec lists after deploy (`kubectl auth can-i …`, bearer 401 from outside OpenClaw, measured memory), and replacing the hand-built eval scenarios with scrubbed recordings after the staged failure.
+- Pod spec, found in the final whole-branch review:
+  - Keep `automountServiceAccountToken` at its default (true) for the k8s-agent pod. The Kubernetes client needs the ServiceAccount token, the CA, and `KUBERNETES_SERVICE_HOST`.
+  - `hostNetwork: false`. Model-written kustomizations can reach the pod's loopback, and only the agent's own bearer-protected server may listen there.
+  - `terminationGracePeriodSeconds` at 160 or more, or accept that a rollout cuts a running diagnosis.
+- Addressing, found in the final review:
+  - The Service must be named `k8s-agent` in namespace `k8s-agent`, port 8080, or the Host check answers 421.
+  - OpenClaw's URL is `http://k8s-agent.k8s-agent.svc:8080/mcp`, without a trailing slash. OpenClaw must not send an `Origin` header, or the agent answers 403.
+  - OpenClaw needs a new secret holding the bearer token (for example `K8S_AGENT_MCP_TOKEN`), sent as `Authorization: Bearer …`.
+- The overlay's `newTag:` line must come directly after `- name: ghcr.io/phuongddx/k8s-agent`, with exactly one match and no trailing comment, or the promotion workflow cannot rewrite it.
+- The OpenClaw skill must handle these exact strings, copied from `src/k8s_agent/service.py`, `pr.py`, and `server.py`:
+  - `Busy with another diagnosis.`
+  - `Model unavailable, try again shortly.`
+  - `The diagnosis hit its time limit. Ask a narrower question.`
+  - `Question too long (max 2000 characters).`
+  - `Proposal not found, ask again.`
+  - `main changed, ask again.`
+  - `A branch for this fix already exists; ask again for a fresh proposal.`
+  - `This fix is already being opened.`
+  - `Opening the PR timed out.`
+  - `Could not open the PR: …`
+  - `Internal error (…).` (the parenthesis holds an exception type name)
+  - The clarify-only response shape: `{"clarify": "<question for the owner>"}` with no other key. Relay the question and wait for the owner's answer.
+- `diagnose` returns `diff` uncapped. The OpenClaw skill must truncate it for Telegram.
+- Add a required reviewer on the GitHub environment `vps192-promotion` of `phuongddx/k8s-agent`. The deployment-branch rule does not apply to a `workflow_run` trigger, so it protects nothing here.
 
 ---
 

@@ -66,7 +66,7 @@ def test_oomkilled_shows_limit_usage_and_node_headroom():
     assert t.top_pods("llm-gateway") == [{"pod": "llm-gateway-5b8c4-q7w2e", "cpu_m": 20, "memory_mi": 121}]
     [node] = t.top_nodes()
     assert node == {
-        "node": "srv1980192",
+        "node": "node-1",
         "cpu_m": 900,
         "memory_mi": 4900,
         "allocatable_memory_mi": 7935,

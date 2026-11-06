@@ -4,7 +4,7 @@ Used by the unit tests and by the manual eval in evals/run_eval.py. Values are s
 
 from dataclasses import dataclass, field
 
-NODE = "srv1980192"
+NODE = "node-1"
 NODE_ALLOCATABLE = "7935Mi"
 SHA_API = "4f1d2c3b" * 5
 SHA_GW = "7e6d5c4b" * 5

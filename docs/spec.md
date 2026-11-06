@@ -4,6 +4,8 @@ at commit 323f9fb (323f9fb3770d379a91f5a61e967c4f07710bf0b9), on 2026-11-06.
 The copy in vps192-k8s-config is the source of truth; update this copy if that file changes.
 -->
 
+> Public copy. Operational security details of the private config repo (credential scopes, open hardening gates, secret names) are omitted here; the private repo's spec is the source of truth.
+
 # Spec: Kubernetes troubleshooting agent on vps192
 
 Status: approved
@@ -22,7 +24,7 @@ Who is affected: the owner (sole operator), the `vps192-k8s-config` repo (receiv
 - `plans/261012-1436-dropitx-on-vps192/FINAL-REPORT.md:34-36`: `MemAvailable` drift and the 1 GiB trigger.
 - `apps/openclaw/base/deployment.yaml:19`: `automountServiceAccountToken: false`; OpenClaw has no cluster access today.
 - `apps/openclaw/vps192/configmap.yaml:20,30,83`: model `zai/glm-5.3` at `https://api.z.ai/api/coding/paas/v4`; the prompt rule forbidding pushes and PRs to this repo.
-- `.github/workflows/validate.yml:3-31`: runs on every PR and on push to `main`; all seven `SOPS_AGE_KEY_*` in job env; runs `scripts/validate.sh` from the checked-out ref.
+- `.github/workflows/validate.yml:3-31`: runs on every PR and on push to `main`; all the per-service Age keys in job env; runs `scripts/validate.sh` from the checked-out ref.
 - `.github/workflows/deploy.yml:1-160`: push to `main` (docs paths ignored) and `workflow_dispatch`; `validate` job also carries the Age keys and runs `scripts/validate.sh`.
 - `scripts/validate.sh:50`: Namespace count asserted as 7. `.sops.yaml`: one Age rule per service.
 - Live, read-only, 2026-11-05: `MemAvailable` 2875 MiB of 7935 MiB; openclaw 1927Mi, keycloak 593Mi, grafana 253Mi.
@@ -87,12 +89,12 @@ Gaps:
   - `traefik.io`: `ingressroutes`, `middlewares`
   - `metrics.k8s.io`: `pods`, `nodes`
   - No rule mentions `secrets`. No write verb appears anywhere.
-- Secret `k8s-agent-secrets` from `secrets/vps192/k8s-agent/k8s-agent-secrets.enc.yaml`, keys `ZAI_API_KEY` (a copy of the owner's GLM key) and `BOT_GH_TOKEN`. New Age identity, GitHub secret `SOPS_AGE_KEY_K8S_AGENT`, a `.sops.yaml` rule for `^secrets/vps192/k8s-agent/.*\.enc\.yaml$`, and deploy wiring.
+- Secret `k8s-agent-secrets` from `secrets/vps192/k8s-agent/k8s-agent-secrets.enc.yaml`, keys `ZAI_API_KEY` (a copy of the owner's GLM key) and `BOT_GH_TOKEN`. New Age identity (its GitHub secret follows the repo's per-service naming), a `.sops.yaml` rule for `^secrets/vps192/k8s-agent/.*\.enc\.yaml$`, and deploy wiring.
 - ConfigMap with non-secret settings: `MODEL=glm-5.3`, `MODEL_BASE_URL=https://api.z.ai/api/coding/paas/v4`, `LOKI_URL=http://loki.logging.svc:3100`, `REPO=phuongddx/vps192-k8s-config`, `BOT_LOGIN` (the bot account's login, set once the account exists), budgets.
 - Service `k8s-agent`, ClusterIP, port 8080.
 - NetworkPolicy: ingress to `k8s-agent` pods only from pods in namespace `openclaw`. Egress unrestricted.
 
-**Repo plumbing.** `infrastructure/base/namespaces.yaml` gains `k8s-agent`. `scripts/validate.sh`: Namespace count 7 → 8, expected-file entries for the overlay and the secret, `k8s-agent` in the no-local-namespace loop, and render rules that the image is a 40-hex tag and every Service is ClusterIP. `deploy.yml`: a matrix row for `k8s-agent` (namespace `k8s-agent`, rollout `deployment/k8s-agent`, health = pod Ready) and `SOPS_AGE_KEY_K8S_AGENT` in the env blocks; `workflow_dispatch` options gain `k8s-agent`.
+**Repo plumbing.** `infrastructure/base/namespaces.yaml` gains `k8s-agent`. `scripts/validate.sh`: Namespace count 7 → 8, expected-file entries for the overlay and the secret, `k8s-agent` in the no-local-namespace loop, and render rules that the image is a 40-hex tag and every Service is ClusterIP. `deploy.yml`: a matrix row for `k8s-agent` (namespace `k8s-agent`, rollout `deployment/k8s-agent`, health = pod Ready) and the new Age key in the env blocks; `workflow_dispatch` options gain `k8s-agent`.
 
 **OpenClaw changes.** No new pods, no new secrets.
 
@@ -161,7 +163,7 @@ Tool output enters the model marked as untrusted data.
 | T6 | Push to `main` so a workflow runs its scripts with Age keys | G1 runs before any job that holds keys; `validate.yml` has no keys |
 | T7 | Edit workflows | no `workflow` scope |
 | T8 | Touch files outside `apps/**` | agent allowlist in code; G2 path check |
-| T9 | Run an old workflow version (about 40 stale branches such as `promote/*` still carry the pre-guard `deploy.yml`/`validate.yml`): push a non-workflow commit onto an old branch, dispatch a workflow with `ref=<old branch>`, or open a PR against an old base. The old files run with current repo secrets. | Gate before rollout step 4 (below); not stopped by G1/G2 or T7 |
+| T9 | Run an old workflow version from a stale branch | handled by a hardening gate in the private repo before the bot is invited |
 | T10 | Re-run an owner run (`github.actor` stays the owner on re-run) | G1 rejects any run whose `github.triggering_actor` is not `phuongddx` |
 
 **G1: deploy guard.** A new first job `guard` in `deploy.yml`. Inline bash and `gh api` with `GITHUB_TOKEN` only; no checkout, no repo scripts. Permissions `contents: read`, `pull-requests: read`, `actions: read`. Every other job declares `needs: guard`.
@@ -180,17 +182,17 @@ The `notify` job runs without a checkout and posts to Slack inline, so no repo f
 1. `validate.yml` holds no Age keys and runs no SOPS decryption. Decryption runs only in `deploy.yml`'s `validate` job, after the `guard` job has verified every commit. No condition on PR author or sender can keep bot code (pushed to `main`, pushed under an owner commit, or brought back by a reopen) out of a job that later holds the keys, because steps share the runner.
 2. For every PR whose author is not `phuongddx` (fail closed, so it covers the bot whatever its login), the path check fails if any changed path is outside `apps/`. It runs first after checkout, before any repo file runs, and diffs with `git diff --no-renames --name-only` so a rename out of a protected path is caught. The bot cannot remove the check, because its token cannot push workflow changes (T7).
 
-**Prerequisite: OpenClaw's GitHub token.** OpenClaw's current `GH_TOKEN` is the owner's. If it reaches this repo, OpenClaw can open and merge PRs as `phuongddx`, and G1 would accept them. Before the bot exists, the owner replaces it with a fine-grained PAT restricted to selected repos that excludes `vps192-k8s-config`, `stress-app-be` and `llm-gateway`. The current token's scopes are probed first without printing it.
+Prerequisite: OpenClaw holds no credential that can write to the config repo (tracked privately).
 
 ### Rollout order
 
 Each step is its own PR or its own approved action.
 
-0. Owner prerequisites: bot account and PAT; replace OpenClaw's `GH_TOKEN`; confirm Z.ai's terms allow this use of the Coding Plan key.
+0. Owner prerequisites: bot account and PAT; the OpenClaw credential prerequisite above; confirm Z.ai's terms allow this use of the Coding Plan key.
 1. PR: G1 and G2. Merged before the bot has access. Confirm a normal owner PR still validates and deploys.
 2. Create `phuongddx/k8s-agent`: code, tests, image CI, promotion workflow.
 3. PR: namespace, RBAC, NetworkPolicy, Deployment pinned to the first image SHA, SOPS secret (values entered on the VPS workbench), `.sops.yaml`, `validate.sh`, `deploy.yml`. Then the post-deploy checks.
-3a. **Gate before the bot exists (T9).** (1) Rename every secret the workflows use (`VPS_SSH_KEY`, `VPS_HOST`, `VPS_USER`, every `SOPS_AGE_KEY_*`, `SLACK_WEBHOOK_URL`) to new names in `deploy.yml`, enter the values under the new names, and delete the old names, so every old workflow version gets empty secrets. Where a value cannot be re-entered, rotate: a new VPS deploy keypair, new Age identities with re-encrypted secrets. (2) Delete stale remote branches and tags. (3) Verify: for every remote ref except `main`, no workflow file references a secret name that still exists. (4) Test with a scratch classic PAT without `workflow` scope whether an old commit can be pushed back as a new ref; the rename in (1) makes that harmless either way. Environment secrets bound to `main` would be cleaner but need a paid plan for private repos (unverified).
+3a. Hardening gate in the private repo (secret rotation and stale-ref cleanup) before the bot exists.
 4. Invite the bot as collaborator. Run the live G1 and G2 tests.
 5. PR: OpenClaw ConfigMap (`mcp.servers.k8s-agent`, skill). Then `openclaw config set` on the PVC file.
 6. End-to-end from Telegram on real current state. Optional, separately approved: a throwaway Deployment with a nonexistent image tag as a staged failure.
@@ -202,7 +204,7 @@ These are unverified facts the design leans on. Each has a fallback.
 
 1. OpenClaw 2026.9.9 supports `mcp.servers` with `streamable-http`. Fallback: the skill calls the agent over plain HTTP with `curl` (`POST /diagnose`, `POST /proposals/{id}/pr`), exposing the same two operations.
 2. A fine-grained PAT owned by the bot can access a collaborator repo on a personal account with Contents and Pull requests write and no Workflows. If yes, use it instead of the classic PAT.
-3. K3s on this node enforces NetworkPolicy (embedded network policy controller enabled). Fallback: a shared bearer token in `k8s-agent-secrets` and OpenClaw's MCP `headers`, accepting that the token then sits in OpenClaw's env.
+3. K3s on this node enforces NetworkPolicy (embedded network policy controller enabled). Fallback: a shared bearer token in `k8s-agent-secrets` and OpenClaw's MCP `headers`, accepting that the token then sits in OpenClaw's env. Outcome: enforcement could not be confirmed; bearer-token access control adopted (`MCP_BEARER_TOKEN`).
 4. Z.ai's Coding Plan endpoint accepts this workload under its terms. Fallback: a pay-per-token Z.ai key at the standard endpoint.
 5. On `pull_request` `synchronize`, `github.event.sender.login` is the account that pushed the new commits. Fallback: no decryption in PR-triggered `validate.yml` at all; SOPS decryption runs only in `deploy.yml` after G1. Outcome: the fallback was adopted after review (2026-11-05), so `sender` is no longer load-bearing.
 6. Optional hardening: the last 8 commits on `main` are signature-verified (checked 2026-11-05). `verified == true` alone does not prove the owner, since the bot can sign its own commits; G1 could additionally require the signer to be GitHub's web-flow key or `phuongddx`. Decide during planning whether this is worth adding.
@@ -253,5 +255,6 @@ The agent logs structured JSON to stdout (collected by Alloy into Loki): questio
 - **Data exposure to the model provider.** Pod logs, events and ConfigMaps are sent to Z.ai. Logs may contain whatever apps print.
 - **Collaborator write reaches every branch.** The bot can push onto an owner PR branch, including `promote/*`, before it is merged. `validate.yml` holds no Age keys, but the owner's merge then deploys whatever the branch holds, and `deploy.yml` decrypts after G1 passes. Control: GitHub notifies the owner of pushes to their PRs, and the owner re-reads "Files changed" immediately before merging.
 - **SOPS errors surface after merge.** A broken encrypted file is caught by `deploy.yml`'s `validate` job, before any apply, instead of on the PR. Deploys stay blocked until a fix PR merges.
-- **Old workflow versions.** Until gate 3a is done, any account with `repo` scope can run pre-guard workflow files with live secrets. The bot must not be invited before 3a is verified.
+- **Old workflow versions.** Until gate 3a is done and verified, the bot must not be invited.
+- **Loopback from rendering.** Model-written kustomizations can still reach the pod's loopback (only the agent's own bearer-protected server listens there). The pod must never use `hostNetwork`.
 - **Detective, not preventive, guard.** G1 stops deploys but cannot stop a bot push to `main` from landing in history.
