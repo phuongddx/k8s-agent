@@ -1,6 +1,6 @@
 """Hand-built cluster snapshots shaped like vps192 workloads, one per runbook symptom.
 
-Used by the unit tests and by the manual eval in eval/run_eval.py. Values are synthetic."""
+Used by the unit tests and by the manual eval in evals/run_eval.py. Values are synthetic."""
 
 from dataclasses import dataclass, field
 
