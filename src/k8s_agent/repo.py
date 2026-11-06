@@ -164,6 +164,18 @@ class Workspace:
     def staged_paths(self) -> list[str]:
         return [p for p in self._git("diff", "--cached", "--no-renames", "--name-only", "HEAD").splitlines() if p]
 
+    def staged_entries(self) -> list[tuple[str, str, str]]:
+        """(source mode, destination mode, path) of every staged change against HEAD, read from git's raw diff."""
+        entries = []
+        for line in self._git("diff", "--cached", "--raw", "--no-renames", "HEAD").splitlines():
+            meta, _, path = line.partition("\t")
+            fields = meta.lstrip(":").split()
+            entries.append((fields[0], fields[1], path) if len(fields) >= 2 else ("?", "?", path))
+        return entries
+
+    def remote_branch_exists(self, branch: str) -> bool:
+        return bool(self._git("ls-remote", "--heads", "origin", f"refs/heads/{branch}").strip())
+
     def apply(self, diff: str) -> None:
         self._git("apply", "--index", "--whitespace=nowarn", "-", stdin=diff)
 

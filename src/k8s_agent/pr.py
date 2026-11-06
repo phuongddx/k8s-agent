@@ -13,6 +13,8 @@ from k8s_agent.repo import RepoError, Workspace
 
 NOT_FOUND = "Proposal not found, ask again."
 MAIN_CHANGED = "main changed, ask again."
+BRANCH_EXISTS = "A branch for this fix already exists; ask again for a fresh proposal."
+FOOTER = "Opened by k8s-agent; owner review required."
 IN_FLIGHT = "This fix is already being opened."
 NOT_PLAIN_TEXT = "the diff is not a plain text change (symlink, file mode or binary content)"
 NO_OVERLAY = "no kustomize overlay for apps/{service}"
@@ -20,6 +22,8 @@ NO_OVERLAY = "no kustomize overlay for apps/{service}"
 _PLAIN_MODE = "100644"
 _MODE_HEADER = re.compile(r"^(?:old mode|new mode|(?:new|deleted) file mode) (\d+)$")
 _INDEX_HEADER = re.compile(r"^index \S+\.\.\S+ (\d+)$")
+_QUESTION_MAX, _CAUSE_MAX, _SOURCE_MAX, _DETAIL_MAX, _EVIDENCE_MAX = 1000, 2000, 200, 500, 10
+_ALLOWED_STAGED_MODES = frozenset({"000000", "100644"})
 # Hunk bodies start with one of these; every other line of a git diff is a header.
 _BODY_PREFIXES = (" ", "+", "-", "\\")
 
@@ -82,13 +86,31 @@ def diff_is_plain_text(diff: str) -> bool:
     return True
 
 
+def _clip(value: object, limit: int) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _fenced(value: str) -> str:
+    """The value in a code block whose fence is longer than any backtick run inside it."""
+    longest = max((len(run) for run in re.findall(r"`+", value)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{value}\n{fence}"
+
+
 def pr_body(p: Proposal) -> str:
-    evidence = "\n".join(f"- **{e.get('source', '?')}**: {e.get('detail', '')}" for e in p.evidence[:8])
-    return (
-        f"**Question:** {p.question}\n\n**Cause:** {p.cause}\n\n**Evidence:**\n{evidence}\n\n"
-        f"Proposal `{p.id}`, based on `{p.base_sha}`.\n\n"
-        "Opened by k8s-agent; owner review required."
-    )
+    """Bounded and inert: model-written text sits in code blocks, so mentions, HTML and comments do nothing."""
+    parts = [
+        f"**Question:**\n\n{_fenced(_clip(p.question, _QUESTION_MAX))}",
+        f"**Cause:**\n\n{_fenced(_clip(p.cause, _CAUSE_MAX))}",
+        "**Evidence:**",
+    ]
+    for number, item in enumerate(p.evidence[:_EVIDENCE_MAX], start=1):
+        line = f"{_clip(item.get('source', '?'), _SOURCE_MAX)}: {_clip(item.get('detail', ''), _DETAIL_MAX)}"
+        parts.append(f"Evidence {number}\n\n{_fenced(line)}")
+    parts.append(f"Proposal `{p.id}`, based on `{p.base_sha}`.")
+    parts.append(FOOTER)
+    return "\n\n".join(parts)
 
 
 class PrOpener:
@@ -144,12 +166,17 @@ class PrOpener:
             self._ws.reset(p.base_sha)
             self._ws.apply(p.diff)
             service = check_paths(sorted(set(self._ws.staged_paths()) | set(paths_in_diff(p.diff))))
+            # The text check cannot see a rename or copy of a symlink, or an edit of one, so read what git staged.
+            if any({src, dst} - _ALLOWED_STAGED_MODES for src, dst, _ in self._ws.staged_entries()):
+                raise PathNotAllowed(NOT_PLAIN_TEXT)
             overlays = overlays_for(self._ws.path, service)
             if not overlays:
                 raise RepoError(NO_OVERLAY.format(service=service))
             for overlay in overlays:
                 self._renderer.render(self._ws.path, overlay)
             branch = f"agent/{service}-{p.id[:8]}"
+            if self._ws.remote_branch_exists(branch):
+                return {"error": BRANCH_EXISTS}
             title = f"fix({service}): {p.summary}"
             self._ws.commit_and_push(branch, title, self._bot_login, self._bot_email)
             url = self._github.create_pull(head=branch, base="main", title=title, body=pr_body(p))
