@@ -1,6 +1,7 @@
 """Fixed, read-only cluster tools. Each returns a compact summary, never a raw object,
 so the model sees the fields that matter and the token count stays small."""
 
+import re
 from collections.abc import Callable
 
 from k8s_agent.kube import KubeApi, KubeError
@@ -10,6 +11,20 @@ METRICS = "/apis/metrics.k8s.io/v1beta1"
 TRAEFIK = "/apis/traefik.io/v1alpha1"
 _BINARY = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40}
 _DECIMAL = {"n": 1e-9, "u": 1e-6, "m": 1e-3, "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12}
+
+
+_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
+
+
+def _check_name(value: str, field: str) -> str:
+    if not isinstance(value, str) or not _NAME.fullmatch(value) or ".." in value:
+        raise ValueError(f"invalid {field}: must be a lowercase DNS-1123 name")
+    return value
+
+
+def _check_optional(value: str | None, field: str) -> None:
+    if value is not None:
+        _check_name(value, field)
 
 
 def parse_quantity(quantity: str) -> float:
@@ -96,6 +111,7 @@ class ClusterTools:
         raise KubeError(404, f"{namespace}/{name}", f"no Deployment, StatefulSet or DaemonSet named {name}")
 
     def list_workloads(self, namespace: str | None = None) -> list[dict]:
+        _check_optional(namespace, "namespace")
         out = []
         for kind, plural in WORKLOAD_PLURALS.items():
             for item in self._api.get_json(f"/apis/apps/v1/{plural}").get("items", []):
@@ -116,6 +132,8 @@ class ClusterTools:
         return sorted(out, key=lambda w: (w["namespace"], w["name"]))
 
     def describe_workload(self, namespace: str, name: str, kind: str | None = None) -> dict:
+        _check_name(namespace, "namespace")
+        _check_name(name, "name")
         kind, obj = self._workload(namespace, name, kind)
         spec, status = obj.get("spec", {}), obj.get("status", {})
         return {
@@ -152,6 +170,8 @@ class ClusterTools:
         }
 
     def list_pods(self, namespace: str, workload: str | None = None) -> list[dict]:
+        _check_name(namespace, "namespace")
+        _check_optional(workload, "workload")
         selector: dict[str, str] = {}
         params = None
         if workload:
@@ -161,6 +181,8 @@ class ClusterTools:
         return [self._pod_summary(p) for p in pods if _labels_match(selector, p["metadata"].get("labels", {}))]
 
     def describe_pod(self, namespace: str, name: str) -> dict:
+        _check_name(namespace, "namespace")
+        _check_name(name, "name")
         pod = self._api.get_json(f"/api/v1/namespaces/{namespace}/pods/{name}")
         summary = self._pod_summary(pod)
         summary["resources"] = _resources(pod.get("spec", {}))
@@ -170,7 +192,10 @@ class ClusterTools:
     def pod_logs(
         self, namespace: str, pod: str, container: str | None = None, previous: bool = False, lines: int | None = None
     ) -> dict:
-        max_lines = min(lines or self._log_max_lines, self._log_max_lines)
+        _check_name(namespace, "namespace")
+        _check_name(pod, "pod")
+        _check_optional(container, "container")
+        max_lines = max(1, min(lines or self._log_max_lines, self._log_max_lines))
         params: dict[str, str | int | bool] = {
             "tailLines": max_lines,
             "limitBytes": self._log_max_bytes,
@@ -197,6 +222,9 @@ class ClusterTools:
         }
 
     def events(self, namespace: str, involved: str | None = None, limit: int = 20) -> list[dict]:
+        _check_name(namespace, "namespace")
+        _check_optional(involved, "involved")
+        limit = max(1, min(limit, 20))
         items = self._api.get_json(f"/api/v1/namespaces/{namespace}/events").get("items", [])
         if involved:
             items = [e for e in items if e.get("involvedObject", {}).get("name", "").startswith(involved)]
@@ -210,10 +238,11 @@ class ClusterTools:
                 "message": e.get("message"),
                 "count": e.get("count", 1),
             }
-            for e in items[-min(limit, 20) :]
+            for e in items[-limit:]
         ]
 
     def top_pods(self, namespace: str) -> list[dict]:
+        _check_name(namespace, "namespace")
         items = self._api.get_json(f"{METRICS}/namespaces/{namespace}/pods").get("items", [])
         return [
             {
@@ -243,6 +272,8 @@ class ClusterTools:
         return out
 
     def rollout_status(self, namespace: str, name: str, kind: str | None = None) -> dict:
+        _check_name(namespace, "namespace")
+        _check_name(name, "name")
         workload = self.describe_workload(namespace, name, kind)
         desired = workload["desired"] or 0
         complete = (
@@ -281,6 +312,7 @@ class ClusterTools:
         }
 
     def get_ingressroutes(self, namespace: str | None = None) -> list[dict]:
+        _check_optional(namespace, "namespace")
         path = f"{TRAEFIK}/namespaces/{namespace}/ingressroutes" if namespace else f"{TRAEFIK}/ingressroutes"
         out = []
         for item in self._api.get_json(path).get("items", []):
@@ -303,6 +335,8 @@ class ClusterTools:
         return out
 
     def get_endpoints(self, namespace: str, name: str) -> dict:
+        _check_name(namespace, "namespace")
+        _check_name(name, "name")
         obj = self._api.get_json(f"/api/v1/namespaces/{namespace}/endpoints/{name}")
         ready, not_ready = [], []
         for subset in obj.get("subsets", []) or []:
@@ -313,6 +347,8 @@ class ClusterTools:
         return {"namespace": namespace, "name": name, "ready": ready, "not_ready": not_ready}
 
     def get_configmap(self, namespace: str, name: str) -> dict:
+        _check_name(namespace, "namespace")
+        _check_name(name, "name")
         obj = self._api.get_json(f"/api/v1/namespaces/{namespace}/configmaps/{name}")
         return {"namespace": namespace, "name": name, "data": obj.get("data", {})}
 

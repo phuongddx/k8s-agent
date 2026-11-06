@@ -152,3 +152,82 @@ def test_registry_exposes_the_twelve_cluster_tools():
             "get_configmap",
         ]
     )
+
+
+BAD_NAMES = ["../secrets/db", "a/b", "x#", "x?y", "X", ""]
+NAME_FIELDS = {
+    "list_workloads": ({}, ["namespace"]),
+    "describe_workload": ({"namespace": "llm-gateway", "name": "llm-gateway"}, ["namespace", "name"]),
+    "list_pods": ({"namespace": "llm-gateway"}, ["namespace", "workload"]),
+    "describe_pod": ({"namespace": "llm-gateway", "name": "llm-gateway-5b8c4-q7w2e"}, ["namespace", "name"]),
+    "pod_logs": ({"namespace": "llm-gateway", "pod": "llm-gateway-5b8c4-q7w2e"}, ["namespace", "pod", "container"]),
+    "events": ({"namespace": "llm-gateway"}, ["namespace", "involved"]),
+    "top_pods": ({"namespace": "llm-gateway"}, ["namespace"]),
+    "rollout_status": ({"namespace": "llm-gateway", "name": "llm-gateway"}, ["namespace", "name"]),
+    "get_ingressroutes": ({}, ["namespace"]),
+    "get_endpoints": ({"namespace": "auth", "name": "keycloak"}, ["namespace", "name"]),
+    "get_configmap": ({"namespace": "dropitx-api", "name": "dropitx-api-config"}, ["namespace", "name"]),
+}
+NAME_CASES = [(tool, field, bad) for tool, (_, fields) in NAME_FIELDS.items() for field in fields for bad in BAD_NAMES]
+
+
+@pytest.mark.parametrize("tool, field, bad", NAME_CASES, ids=[f"{t}-{f}-{b!r}" for t, f, b in NAME_CASES])
+def test_name_arguments_are_validated_before_any_api_call(tool, field, bad):
+    fake = FakeKube(scenarios.crashloop().snapshot)
+    base = NAME_FIELDS[tool][0]
+    with pytest.raises(ValueError, match="invalid"):
+        getattr(ClusterTools(fake), tool)(**{**base, field: bad})
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("name", ["llm-gateway", "dropitx-postgres-0"])
+def test_valid_dns_names_reach_the_api(name):
+    fake = FakeKube(scenarios.crashloop().snapshot)
+    with pytest.raises(KubeError) as info:
+        ClusterTools(fake).get_configmap("dropitx-api", name)
+    assert info.value.status == 404
+    assert fake.calls == [f"/api/v1/namespaces/dropitx-api/configmaps/{name}"]
+
+
+def test_pod_logs_sends_the_server_side_caps():
+    s = scenarios.crashloop()
+    fake = FakeKube(s.snapshot)
+    ClusterTools(fake).pod_logs("dropitx-api", "dropitx-api-6d5f7-x2k9p", previous=True)
+    [(path, params)] = fake.params_seen
+    assert path == "/api/v1/namespaces/dropitx-api/pods/dropitx-api-6d5f7-x2k9p/log"
+    assert params["tailLines"] == 200
+    assert params["limitBytes"] == 32768
+
+
+def test_pod_logs_clamps_requested_lines_to_the_cap():
+    s = scenarios.crashloop()
+    fake = FakeKube(s.snapshot)
+    ClusterTools(fake).pod_logs("dropitx-api", "dropitx-api-6d5f7-x2k9p", previous=True, lines=5000)
+    [(_, params)] = fake.params_seen
+    assert params["tailLines"] == 200
+
+
+def test_pod_logs_clamps_negative_lines_to_one():
+    s = scenarios.crashloop()
+    fake = FakeKube(s.snapshot)
+    out = ClusterTools(fake).pod_logs("dropitx-api", "dropitx-api-6d5f7-x2k9p", previous=True, lines=-5)
+    [(_, params)] = fake.params_seen
+    assert params["tailLines"] == 1
+    assert out["lines"] == 1
+
+
+def _thirty_events():
+    s = scenarios.healthy()
+    s.snapshot["/api/v1/namespaces/openclaw/events"] = {
+        "items": [
+            scenarios.event("openclaw", "Pod", "p", "R", f"m{i}", f"2026-11-05T10:{i:02d}:00Z") for i in range(30)
+        ][::-1]
+    }
+    return s
+
+
+@pytest.mark.parametrize("limit, expected", [(0, 1), (-3, 1), (1, 1), (999, 20)])
+def test_events_limit_is_clamped_to_one_to_twenty(limit, expected):
+    out = ClusterTools(FakeKube(_thirty_events().snapshot)).events("openclaw", limit=limit)
+    assert len(out) == expected
+    assert out[-1]["message"] == "m29"

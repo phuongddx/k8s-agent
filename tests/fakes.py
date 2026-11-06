@@ -14,9 +14,11 @@ class FakeKube:
         self.snapshot = snapshot
         self.forbidden = forbidden
         self.calls: list[str] = []
+        self.params_seen: list[tuple[str, dict]] = []
 
     def _lookup(self, path: str, params: Params | None) -> object:
         self.calls.append(path)
+        self.params_seen.append((path, dict(params or {})))
         if path in self.forbidden:
             raise KubeError(403, path, "forbidden")
         key = path
