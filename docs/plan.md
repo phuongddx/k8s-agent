@@ -101,7 +101,7 @@ No GitHub mutation in this task. Everything stays local.
 - Consumes: nothing.
 - Produces: the `k8s_agent` package importable under `uv run`; console script `k8s-agent = "k8s_agent.server:main"` (the module arrives in Task 10); the CI job names `lint`, `test`, and `ci-passed` (Task 13 makes `ci-passed` the required check); `scripts/install-kustomize.sh [dest]`, reused by the Dockerfile in Task 11.
 
-- [ ] **Step 1: Install uv and check the toolchain**
+- [x] **Step 1: Install uv and check the toolchain**
 
 Run:
 ```bash
@@ -113,7 +113,7 @@ git -C <k8s-agent> config --local --get commit.gpgsign
 ```
 Expected: `uv 0.13.x` (any 0.13 release reads the lock), `Python 3.12.x`, a kustomize version line (the render tests use whatever is on PATH locally; CI and the image pin v5.7.1), and `true`. If `kustomize` is missing, run `brew install kustomize`.
 
-- [ ] **Step 2: Confirm the spec copy matches its source**
+- [x] **Step 2: Confirm the spec copy matches its source**
 
 Run:
 ```bash
@@ -128,7 +128,7 @@ Expected: the public copy is redacted on purpose, so `diff` prints only the reda
   git -C <config-repo> show 323f9fb:docs/features/k8s-troubleshoot-agent/spec.md; } > docs/spec.md
 ```
 
-- [ ] **Step 3: Write the failing smoke test**
+- [x] **Step 3: Write the failing smoke test**
 
 Create `tests/__init__.py` (empty) and `tests/test_package.py`:
 ```python
@@ -145,7 +145,7 @@ def test_package_imports():
     assert k8s_agent.__name__ == "k8s_agent"
 ```
 
-- [ ] **Step 4: Write `pyproject.toml`**
+- [x] **Step 4: Write `pyproject.toml`**
 
 Each dependency is there for one reason: `langgraph` (the graph the spec names), `openai` (OpenAI-compatible client for Z.ai with tool calling and built-in retry), `mcp` (MCP server), `starlette` (host app; already a dependency of mcp), `uvicorn` (ASGI server), `httpx2` (Kubernetes, Loki, and GitHub HTTP, plus test transports; already a dependency of mcp and openai), `pydantic` (validates the model's JSON), `anyio` (thread offload, timeout, pytest plugin). Dev only: `pytest`, `ruff`.
 
@@ -203,7 +203,7 @@ ignore = ["S101", "S603", "S607"]
 "eval/**" = ["S105", "S106", "S107", "S108"]
 ```
 
-- [ ] **Step 5: Write the package marker, README, and .gitignore**
+- [x] **Step 5: Write the package marker, README, and .gitignore**
 
 `src/k8s_agent/__init__.py`:
 ```python
@@ -269,7 +269,7 @@ __pycache__/
 evals/results/
 ```
 
-- [ ] **Step 6: Lock, install, and run the smoke test**
+- [x] **Step 6: Lock, install, and run the smoke test**
 
 Run:
 ```bash
@@ -280,7 +280,7 @@ uv run pytest tests/test_package.py
 ```
 Expected: `uv lock --check` exits 0 (the committed lock matches `pyproject.toml`); the test run ends with `2 passed`. Only if `uv.lock` is missing, run `uv lock` instead; transitive versions may then differ from the tested set.
 
-- [ ] **Step 7: Write the kustomize installer**
+- [x] **Step 7: Write the kustomize installer**
 
 `scripts/install-kustomize.sh` (version and SHA256 copied from vps192-k8s-config `scripts/install-tools.sh`):
 ```bash
@@ -308,7 +308,7 @@ install -m 0755 "$work/kustomize" "$dest/kustomize"
 Run: `chmod +x scripts/install-kustomize.sh && shellcheck scripts/install-kustomize.sh && echo ok`
 Expected: `ok`. The script targets linux/amd64 and runs in CI and the Docker build, not on the Mac.
 
-- [ ] **Step 8: Write the CI workflow**
+- [x] **Step 8: Write the CI workflow**
 
 `.github/workflows/ci.yml` (Task 11 adds the `docker-build` job):
 ```yaml
@@ -375,7 +375,7 @@ jobs:
 Run: `actionlint .github/workflows/ci.yml && echo ok`
 Expected: `ok`.
 
-- [ ] **Step 9: Lint and commit**
+- [x] **Step 9: Lint and commit**
 
 Run: `uv run ruff check . && uv run ruff format --check .`
 Expected: `All checks passed!` and `… files already formatted`.
@@ -407,7 +407,7 @@ Logging is here, not in Task 10, because the Kubernetes client in Task 3 already
 
 `BOT_GH_TOKEN` is required because `vps192-k8s-config` is private: the clone needs it before `diagnose` can read manifests. If the clone fails (for example before Plan 3 invites the bot), diagnosis still runs and the evidence notes that the repo was unavailable (Task 8).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/test_settings.py`:
 ```python
@@ -514,12 +514,12 @@ def test_unknown_fields_are_dropped_by_name_only(caplog):
     assert "ghp_x" not in text
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `uv run pytest tests/test_settings.py tests/test_logs.py`
 Expected: collection errors with `ModuleNotFoundError: No module named 'k8s_agent.settings'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/k8s_agent/settings.py`:
 ```python
@@ -698,12 +698,12 @@ def log_event(event: str, level: int = logging.INFO, **fields: object) -> None:
     logging.getLogger(LOGGER_NAME).log(level, event, extra={"fields": kept})
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_settings.py tests/test_logs.py`
 Expected: `15 passed`.
 
-- [ ] **Step 5: Full suite, lint, commit**
+- [x] **Step 5: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `17 passed`, `All checks passed!`, already formatted.
@@ -734,7 +734,7 @@ git commit -m "feat: settings from env and allowlisted JSON logs"
 
 API paths the tools read (the RBAC Plan 3 grants must cover them): `/apis/apps/v1/{deployments,statefulsets,daemonsets}` (cluster-wide list), `/apis/apps/v1/namespaces/{ns}/{plural}/{name}`, `/apis/apps/v1/namespaces/{ns}/replicasets`, `/api/v1/namespaces/{ns}/pods[/{name}[/log]]`, `/api/v1/namespaces/{ns}/events`, `/api/v1/nodes`, `/apis/metrics.k8s.io/v1beta1/{nodes,namespaces/{ns}/pods}`, `/apis/traefik.io/v1alpha1/[namespaces/{ns}/]ingressroutes`, `/api/v1/namespaces/{ns}/endpoints/{name}`, `/api/v1/namespaces/{ns}/configmaps/{name}`. No path contains `secrets`.
 
-- [ ] **Step 1: Write the test support**
+- [x] **Step 1: Write the test support**
 
 `tests/fakes.py`:
 ```python
@@ -1329,7 +1329,7 @@ def healthy() -> Scenario:
 ALL = {s.name: s for s in (crashloop(), oomkilled(), imagepull(), pending(), gateway_5xx(), healthy())}
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `tests/test_kube.py`:
 ```python
@@ -1564,12 +1564,12 @@ def test_registry_exposes_the_twelve_cluster_tools():
     )
 ```
 
-- [ ] **Step 3: Run them to verify they fail**
+- [x] **Step 3: Run them to verify they fail**
 
 Run: `uv run pytest tests/test_kube.py tests/test_cluster_tools.py`
 Expected: collection errors with `ModuleNotFoundError: No module named 'k8s_agent.kube'`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 `src/k8s_agent/kube.py`:
 ```python
@@ -1995,12 +1995,12 @@ class ClusterTools:
         }
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `uv run pytest tests/test_kube.py tests/test_cluster_tools.py`
 Expected: `16 passed`.
 
-- [ ] **Step 6: Full suite, lint, commit**
+- [x] **Step 6: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `33 passed`, `All checks passed!`, already formatted.
@@ -2023,7 +2023,7 @@ git commit -m "feat: read-only Kubernetes client and cluster tools"
 - Consumes: nothing.
 - Produces: `class LokiUnavailable(Exception)` (transport error or HTTP 5xx); `class LokiQueryError(ValueError)` (HTTP 4xx); `class LokiClient(base_url: str, http: httpx2.Client, default_hours=1, max_hours=168, max_lines=200, max_bytes=32768)` with `query(query: str, hours: int | None = None, limit: int | None = None, now: float | None = None) -> dict`. It returns `{query, window_hours, clamped, lines, truncated, entries: [{ts, labels, line}]}`, oldest first. It calls `GET {base}/loki/api/v1/query_range` with `start`/`end` in nanoseconds and `direction=backward`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/test_loki.py`:
 ```python
@@ -2104,12 +2104,12 @@ def test_bad_logql_is_a_query_error():
         _client(lambda r: httpx2.Response(400, text="parse error at line 1")).query("{")
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_loki.py`
 Expected: collection error with `ModuleNotFoundError: No module named 'k8s_agent.tools.loki'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/k8s_agent/tools/loki.py`:
 ```python
@@ -2195,12 +2195,12 @@ class LokiClient:
         }
 ```
 
-- [ ] **Step 4: Run the test**
+- [x] **Step 4: Run the test**
 
 Run: `uv run pytest tests/test_loki.py`
 Expected: `5 passed`.
 
-- [ ] **Step 5: Full suite, lint, commit**
+- [x] **Step 5: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `38 passed`, `All checks passed!`, already formatted.
@@ -2228,7 +2228,7 @@ git commit -m "feat: Loki query tool with window and size caps"
   - Git hermeticity: every call sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`. The token reaches git only through an inline credential helper that reads env `K8S_AGENT_GIT_TOKEN`, so it never appears in argv, the remote URL, or `.git/config`.
   - Test support: `tests.gitrepo.git(cwd, *args) -> str`, `make_origin(tmp_path, files) -> Path` (bare repo, one commit on `main`), `push_commit(tmp_path, bare, rel, content, message) -> str`. Fixtures `kustomize` (path; skipped locally when missing, fails when `CI` is set) and `anyio_backend` (`"asyncio"`, used in Task 10).
 
-- [ ] **Step 1: Write the test support**
+- [x] **Step 1: Write the test support**
 
 `tests/gitrepo.py`:
 ```python
@@ -2311,7 +2311,7 @@ def kustomize():
     return path
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `tests/test_diffcheck.py`:
 ```python
@@ -2562,12 +2562,12 @@ def test_every_scenario_repo_renders(tmp_path, kustomize, name):
         KustomizeRenderer(kustomize).render(tmp_path, overlay)
 ```
 
-- [ ] **Step 3: Run them to verify they fail**
+- [x] **Step 3: Run them to verify they fail**
 
 Run: `uv run pytest tests/test_diffcheck.py tests/test_repo.py tests/test_render.py`
 Expected: collection errors with `ModuleNotFoundError: No module named 'k8s_agent.diffcheck'`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 `src/k8s_agent/diffcheck.py`:
 ```python
@@ -2845,12 +2845,12 @@ class Workspace:
         return self.head()
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `uv run pytest tests/test_diffcheck.py tests/test_repo.py tests/test_render.py`
 Expected: `37 passed` (kustomize on PATH; without it the render tests are skipped locally).
 
-- [ ] **Step 6: Full suite, lint, commit**
+- [x] **Step 6: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `75 passed`, `All checks passed!`, already formatted.
@@ -2873,7 +2873,7 @@ git commit -m "feat: repo workspace, apps/** allowlist and kustomize render chec
 - Consumes: nothing.
 - Produces: `@dataclass(frozen=True) class Proposal: id, diff, base_sha, created_at, service, summary, question, cause, evidence: list[dict]`; `class ProposalStore(ttl_seconds: float = 86400, clock: Callable[[], float] = time.time)` with `add(*, diff, base_sha, service, summary, question, cause, evidence) -> Proposal` (id is `uuid4().hex`, 32 chars), `get(proposal_id) -> Proposal | None` (None when missing or at least `ttl_seconds` old), `remove(proposal_id) -> None`. In memory only, so a restart loses every proposal, as the spec requires.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/test_proposals.py`:
 ```python
@@ -2932,12 +2932,12 @@ def test_remove():
     assert store.get(p.id) is None
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_proposals.py`
 Expected: collection error with `ModuleNotFoundError: No module named 'k8s_agent.proposals'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/k8s_agent/proposals.py`:
 ```python
@@ -3004,12 +3004,12 @@ class ProposalStore:
             del self._items[pid]
 ```
 
-- [ ] **Step 4: Run the test**
+- [x] **Step 4: Run the test**
 
 Run: `uv run pytest tests/test_proposals.py`
 Expected: `4 passed`.
 
-- [ ] **Step 5: Full suite, lint, commit**
+- [x] **Step 5: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `79 passed`, `All checks passed!`, already formatted.
@@ -3034,7 +3034,7 @@ git commit -m "feat: in-memory fix proposals with 24 h expiry"
   - `prompts.UNTRUSTED_RULE`, `RUNBOOK` (the spec's table), `INTAKE`, `INVESTIGATE`, `DIAGNOSE`, `PROPOSE`, `REPAIR`, `RETRY_JSON` (has a `{error}` slot), and `untrusted(source: str, payload: object) -> str`, which wraps in `<untrusted-data source="…">` and escapes any closing tag inside.
   - `toolbox.TOOL_SPECS` (fifteen OpenAI function schemas, in the spec's order); `class Toolbox(cluster, loki, workspace, max_bytes=32768)` with `specs()`, `reset()`, attribute `loki_unavailable: bool`, and `call(name: str, arguments: dict) -> str` (JSON text capped at `max_bytes`). Errors become `{"error": …}`. A Loki outage sets `loki_unavailable`. An unknown tool whose name contains "secret" logs warning event `tool.secret_request`. Every call logs `tool.call` with `tool`, `status`, and `duration_ms`, never the body.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/test_llm.py`:
 ````python
@@ -3270,12 +3270,12 @@ def test_untrusted_wrapper_cannot_be_closed_from_inside():
     assert wrapped.count("</untrusted-data>") == 1
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `uv run pytest tests/test_llm.py tests/test_toolbox.py`
 Expected: collection errors with `ModuleNotFoundError: No module named 'k8s_agent.llm'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/k8s_agent/llm.py`:
 ````python
@@ -3610,12 +3610,12 @@ class Toolbox:
         return text
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_llm.py tests/test_toolbox.py`
 Expected: `15 passed`. The retry tests take about a second each because of the SDK's backoff.
 
-- [ ] **Step 5: Full suite, lint, commit**
+- [x] **Step 5: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `94 passed`, `All checks passed!`, already formatted.
@@ -3653,7 +3653,7 @@ Behaviour this task pins down, all from the spec:
 - `propose_fix` runs only for `fix_kind == "config"` with a clone and a service dir. The model returns whole-file edits, the agent writes them through the allowlist, builds the diff, checks paths, and renders every overlay. A render failure gets one repair round, then the diagnosis returns without a diff. The clone is always reset afterwards.
 - The node-level deadline (`graph_seconds`, 150) raises `DeadlineExceeded`.
 
-- [ ] **Step 1: Write the test support**
+- [x] **Step 1: Write the test support**
 
 `tests/graph_fakes.py`:
 ```python
@@ -3784,7 +3784,7 @@ def scenario_deps(work_dir: Path, scenario: Scenario, model, renderer=None, budg
     return deps
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `tests/test_graph.py`:
 ```python
@@ -4054,12 +4054,12 @@ def test_fix_lands_in_the_apps_dir_of_the_namespace(tmp_path):
     assert "chore: seed" in model.sent[1][1]["content"]
 ```
 
-- [ ] **Step 3: Run them to verify they fail**
+- [x] **Step 3: Run them to verify they fail**
 
 Run: `uv run pytest tests/test_graph.py`
 Expected: collection error with `ModuleNotFoundError: No module named 'k8s_agent.graph'`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 `src/k8s_agent/graph.py`:
 ```python
@@ -4423,12 +4423,12 @@ def run_diagnosis(graph, deps: Deps, question: str) -> tuple[dict, dict]:
     return {k: diagnosis[k] for k in RESULT_KEYS if diagnosis.get(k) is not None}, stats
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `uv run pytest tests/test_graph.py`
 Expected: `18 passed`.
 
-- [ ] **Step 6: Full suite, lint, commit**
+- [x] **Step 6: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `112 passed`, `All checks passed!`, already formatted.
@@ -4452,7 +4452,7 @@ git commit -m "feat: diagnose graph with budgets, structured output and fix prop
 
 Flow (spec "open_pr"): look up the proposal (missing or expired → `NOT_FOUND`) → fetch, and if `origin/main` differs from `base_sha` return `MAIN_CHANGED` (no rebase) → reset to `base_sha`, `git apply --index`, re-check the staged paths and the diff's paths → render every overlay → commit as the bot `fix(<svc>): <summary>` → push `agent/<svc>-<id[:8]>` → open the PR against `main` → remove the proposal → reset the clone to `origin/main` whatever happened.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/test_pr.py`:
 ```python
@@ -4585,12 +4585,12 @@ def test_pr_body_lists_question_cause_evidence(env):
     assert "- **events**: BackOff at 10:00" in body
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_pr.py`
 Expected: collection error with `ModuleNotFoundError: No module named 'k8s_agent.pr'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/k8s_agent/pr.py`:
 ```python
@@ -4693,12 +4693,12 @@ class PrOpener:
         return {"pr_url": url}
 ```
 
-- [ ] **Step 4: Run the test**
+- [x] **Step 4: Run the test**
 
 Run: `uv run pytest tests/test_pr.py`
 Expected: `7 passed`.
 
-- [ ] **Step 5: Full suite, lint, commit**
+- [x] **Step 5: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `119 passed`, `All checks passed!`, already formatted.
@@ -4723,7 +4723,7 @@ git commit -m "feat: open_pr pushes an agent branch and opens a PR as the bot"
   - `server.ALLOWED_HOSTS` (MCP Host allowlist: `k8s-agent.k8s-agent.svc[:*]`, `…svc.cluster.local[:*]`, `localhost[:*]`, `127.0.0.1[:*]`); `BearerAuth` (ASGI middleware covering `/mcp*`; 401 with `WWW-Authenticate: Bearer`); `build_app(service, bearer_token: str, graph_seconds: float) -> Starlette`, with `app.state.mcp` set to the `MCPServer`; `build_service(settings) -> AgentService` (production wiring); `main()`, which exits 2 on invalid settings and otherwise serves on `0.0.0.0:PORT`.
   - MCP tools `diagnose(question: str) -> dict[str, Any]` (hard limit `graph_seconds`, then `{"error": TIMEOUT}`) and `open_pr(proposal_id: str) -> dict[str, Any]` (120 s limit). Transport: `json_response=True`, `stateless_http=True`, path `/mcp`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/test_service.py`:
 ```python
@@ -4893,12 +4893,12 @@ def test_main_exits_2_when_settings_are_invalid(monkeypatch):
     assert info.value.code == 2
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `uv run pytest tests/test_service.py tests/test_server.py`
 Expected: collection errors with `ModuleNotFoundError: No module named 'k8s_agent.service'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/k8s_agent/service.py`:
 ```python
@@ -5156,17 +5156,17 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_service.py tests/test_server.py`
 Expected: `12 passed`.
 
-- [ ] **Step 5: Check the entry point fails closed without settings**
+- [x] **Step 5: Check the entry point fails closed without settings**
 
 Run: `env -i PATH="$PATH" HOME="$HOME" uv run k8s-agent; echo "exit=$?"`
 Expected: one JSON line with `"event": "settings.invalid"` and `"error_type": "MCP_BEARER_TOKEN is required"`, then `exit=2`.
 
-- [ ] **Step 6: Full suite, lint, commit**
+- [x] **Step 6: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `131 passed`, `All checks passed!`, already formatted.
@@ -5192,7 +5192,7 @@ git commit -m "feat: MCP server with bearer auth, single-flight service and time
 
 Differences from llm-gateway's `deploy.yml`, all deliberate: no `workflow_dispatch` (so no image can be built from a branch other than `main`); no Slack (no webhook secret in a public repo); no auto-merge or rollout wait (the owner merges in vps192-k8s-config); `persist-credentials: false` on checkouts; the source SHA is checked against `^[0-9a-f]{40}$`; the `head_repository` gate.
 
-- [ ] **Step 1: Write the Dockerfile and .dockerignore**
+- [x] **Step 1: Write the Dockerfile and .dockerignore**
 
 `Dockerfile`:
 ```dockerfile
@@ -5240,7 +5240,7 @@ evals
 tests
 ```
 
-- [ ] **Step 2: Add the Docker job to CI**
+- [x] **Step 2: Add the Docker job to CI**
 
 Replace `.github/workflows/ci.yml` with:
 ```yaml
@@ -5321,7 +5321,7 @@ jobs:
       - run: echo "All CI jobs passed"
 ```
 
-- [ ] **Step 3: Write the release workflow**
+- [x] **Step 3: Write the release workflow**
 
 `.github/workflows/release.yml`:
 ```yaml
@@ -5429,12 +5429,12 @@ jobs:
           fi
 ```
 
-- [ ] **Step 4: Lint the workflows**
+- [x] **Step 4: Lint the workflows**
 
 Run: `actionlint .github/workflows/ci.yml .github/workflows/release.yml && echo ok`
 Expected: `ok`.
 
-- [ ] **Step 5: Dry-run the promotion rewrite and the skip branch locally**
+- [x] **Step 5: Dry-run the promotion rewrite and the skip branch locally**
 
 Run:
 ```bash
@@ -5448,7 +5448,7 @@ rm "$t/apps/k8s-agent/vps192/kustomization.yaml"
 ```
 Expected: `    newTag: 0123456789abcdef0123456789abcdef01234567`, then `skip branch taken`. The one-liner is byte-for-byte the one in `release.yml`.
 
-- [ ] **Step 6: Build and smoke-test the image locally (needs a running Docker daemon)**
+- [x] **Step 6: Build and smoke-test the image locally (needs a running Docker daemon)**
 
 Run:
 ```bash
@@ -5460,7 +5460,7 @@ docker run --rm --platform linux/amd64 k8s-agent:local; echo "exit=$?"
 ```
 Expected: `10001`, `git version 2.39.x`, `v5.7.1`, `import ok`; then a `settings.invalid` JSON line and `exit=2`. On Apple silicon the amd64 build runs under emulation and takes several minutes. If no daemon is running (Rancher Desktop stopped), skip this step: the `docker-build` job runs the same smoke test on the first push in Task 13.
 
-- [ ] **Step 7: Full suite, lint, commit**
+- [x] **Step 7: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `131 passed` (this task adds no tests), `All checks passed!`, already formatted.
@@ -5484,7 +5484,7 @@ The six scenarios from Task 3 are the "recorded scenarios" of the spec's Testing
 - Consumes: `tests.scenarios.ALL`/`Scenario` (Task 3), `tests.graph_fakes.scenario_deps`, `FakeRenderer`, `ScriptedModel` (Task 8), `build_graph`, `run_diagnosis` (Task 8), `OpenAIChatModel`, `ModelUnavailable` (Task 7), `KustomizeRenderer` (Task 5).
 - Produces: `evals.scoring.corpus(scenario) -> str`, `grounded(detail, text, window=3) -> bool`, `score(scenario, result) -> {cause_hint, fix_kind_match, grounded, evidence}`; `evals.harness.run_scenario(scenario, model, renderer=None) -> {scenario, question, result, stats, auto}`; CLI `uv run python -m evals.run_eval [--scenario NAME]… [--no-prompt]`, which reads `ZAI_API_KEY` (plus optional `MODEL` and `MODEL_BASE_URL`), asks the owner "Right cause?" and "Cites real evidence?" per scenario, and appends rows to `evals/results/<UTC>.jsonl` (gitignored).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/test_evals.py`:
 ```python
@@ -5553,12 +5553,12 @@ def test_cli_rejects_unknown_scenarios():
         main(["--scenario", "nope"])
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `uv run pytest tests/test_evals.py`
 Expected: collection error with `ModuleNotFoundError: No module named 'evals'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `evals/__init__.py`: empty file.
 
@@ -5709,12 +5709,12 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 4: Run the test**
+- [x] **Step 4: Run the test**
 
 Run: `uv run pytest tests/test_evals.py`
 Expected: `6 passed`.
 
-- [ ] **Step 5: Full suite, lint, commit**
+- [x] **Step 5: Full suite, lint, commit**
 
 Run: `uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Expected: `137 passed`, `All checks passed!`, already formatted.
@@ -5724,7 +5724,7 @@ git add evals/__init__.py evals/scoring.py evals/harness.py evals/run_eval.py te
 git commit -m "test: manual eval harness over six recorded scenarios"
 ```
 
-- [ ] **Step 6: Owner runs the eval against GLM (by hand, optional before Task 13)**
+- [x] **Step 6: Owner runs the eval against GLM (by hand, optional before Task 13)**
 
 The owner runs this in their own terminal, so the key never enters the agent's context:
 ```bash
@@ -5748,7 +5748,7 @@ Every step marked **(approval)** changes GitHub. Get the owner's explicit go-ahe
 - Consumes: CI job `ci-passed` (Tasks 1 and 11), workflow `Release` (Task 11).
 - Produces for Plan 3: the public repo `phuongddx/k8s-agent`; image `ghcr.io/phuongddx/k8s-agent:<first sha>` (public); branch protection on `main` requiring `ci-passed`; environment `vps192-promotion` limited to `main` and holding `VPS192_CONFIG_PROMOTION_TOKEN`.
 
-- [ ] **Step 1: Preconditions (read-only)**
+- [x] **Step 1: Preconditions (read-only)**
 
 Run:
 ```bash
@@ -5760,7 +5760,7 @@ gh repo view phuongddx/k8s-agent 2>&1 | head -1
 ```
 Expected: a clean tree; twelve task commits; `137 passed`; `Logged in to github.com account phuongddx` with scopes including `repo` and `workflow`; `GraphQL: Could not resolve to a Repository …` (the repo does not exist yet).
 
-- [ ] **Step 2 (approval): Create the empty public repository**
+- [x] **Step 2 (approval): Create the empty public repository**
 
 Run:
 ```bash
@@ -5770,7 +5770,7 @@ gh repo view phuongddx/k8s-agent --json visibility,defaultBranchRef --jq '{visib
 ```
 Expected: `✓ Created repository phuongddx/k8s-agent on GitHub`, then `{"branch":"","visibility":"PUBLIC"}` (no branch until the first push).
 
-- [ ] **Step 3 (approval): Actions settings — read-only token by default, approval for every outside contributor**
+- [x] **Step 3 (approval): Actions settings — read-only token by default, approval for every outside contributor**
 
 Run:
 ```bash
@@ -5787,7 +5787,7 @@ gh api repos/phuongddx/k8s-agent/actions/permissions/fork-pr-contributor-approva
 ```
 Expected: `{"approval_policy":"all_external_contributors"}`. If the GET returns 404 (endpoint not available), set it in the UI instead: Settings → Actions → General → "Approval for running fork pull request workflows from contributors" → "Require approval for all external contributors" → Save. Then confirm the radio button by reading the page back.
 
-- [ ] **Step 4 (approval): Environment `vps192-promotion`, deployable from `main` only**
+- [x] **Step 4 (approval): Environment `vps192-promotion`, deployable from `main` only**
 
 Run:
 ```bash
@@ -5803,7 +5803,7 @@ gh api repos/phuongddx/k8s-agent/environments/vps192-promotion/deployment-branch
 ```
 Expected: `{"name":"vps192-promotion","policy":{"custom_branch_policies":true,"protected_branches":false}}` and `[{"name":"main","type":"branch"}]`.
 
-- [ ] **Step 5 (approval): The promotion secret, typed by the owner**
+- [x] **Step 5 (approval): The promotion secret, typed by the owner**
 
 The owner runs this. It prompts for the value, and the agent never sees it. Use the same token as `llm-gateway`'s `VPS192_CONFIG_PROMOTION_TOKEN`: it can push branches to and open PRs on `phuongddx/vps192-k8s-config`.
 ```bash
@@ -5812,7 +5812,7 @@ gh secret list --env vps192-promotion --repo phuongddx/k8s-agent
 ```
 Expected: `✓ Set Actions secret VPS192_CONFIG_PROMOTION_TOKEN for phuongddx/k8s-agent`, then one line naming `VPS192_CONFIG_PROMOTION_TOKEN` with a timestamp. Also confirm that no repository-level secret exists: `gh secret list --repo phuongddx/k8s-agent` prints nothing.
 
-- [ ] **Step 6 (approval): First push**
+- [x] **Step 6 (approval): First push**
 
 Run:
 ```bash
@@ -5821,7 +5821,7 @@ git push -u origin main
 ```
 Expected: `branch 'main' set up to track 'origin/main'`.
 
-- [ ] **Step 7: Watch CI, then Release**
+- [x] **Step 7: Watch CI, then Release**
 
 Run:
 ```bash
@@ -5838,7 +5838,7 @@ gh pr list --repo phuongddx/vps192-k8s-config --state all --search "promote(k8s-
 ```
 Expected: CI jobs `lint`, `test`, `docker-build`, and `ci-passed` succeed; Release jobs `build` and `promote` both `success`; one annotation `Promotion skipped: apps/k8s-agent/vps192/kustomization.yaml does not exist in phuongddx/vps192-k8s-config yet; no PR opened for ghcr.io/phuongddx/k8s-agent:<sha>.`; and `0` promotion PRs. The annotation is checked instead of grepping the log, because the log also prints the script text. On failure: `gh run view <id> --repo phuongddx/k8s-agent --log-failed`. If `promote` waits for approval, the environment has required reviewers set; it should not, so check Step 4.
 
-- [ ] **Step 8 (approval): Make the GHCR package public**
+- [x] **Step 8 (approval): Make the GHCR package public**
 
 There is no REST endpoint for a user package's visibility. In the UI: https://github.com/users/phuongddx/packages/container/k8s-agent/settings → Danger Zone → Change visibility → Public → type `k8s-agent` → confirm. Then check that an anonymous pull works:
 ```bash
@@ -5850,7 +5850,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $tok" \
 ```
 Expected: `200`. The package page shows "Public" and links to the `phuongddx/k8s-agent` repository (from the `org.opencontainers.image.source` label).
 
-- [ ] **Step 9 (approval): Branch protection on `main`**
+- [x] **Step 9 (approval): Branch protection on `main`**
 
 Run:
 ```bash
@@ -5869,7 +5869,7 @@ gh api repos/phuongddx/k8s-agent/branches/main/protection \
 ```
 Expected: `{"admins":true,"checks":["ci-passed"],"force":false,"reviews":0}`. Zero approvals, because the owner cannot approve their own PR. The PR and the green `ci-passed` check are the gate.
 
-- [ ] **Step 10 (approval): Prove the PR path with the execution record**
+- [x] **Step 10 (approval): Prove the PR path with the execution record**
 
 Fill in the "Execution record" section at the end of this plan with the values from Steps 7 and 8, and tick this plan's checkboxes. Then:
 ```bash
@@ -5894,16 +5894,16 @@ Report: the repo URL; the CI and Release run URLs; the first image ref `ghcr.io/
 Filled in during Task 13.
 
 ```text
-captured_at=
+captured_at=2026-11-06T14:20:22Z
 repo_url=https://github.com/phuongddx/k8s-agent
-first_image=ghcr.io/phuongddx/k8s-agent:
-ci_run_url=
-release_run_url=
+first_image=ghcr.io/phuongddx/k8s-agent:3597bfb7c4fc968b442f9b649822755f7212f544
+ci_run_url=https://github.com/phuongddx/k8s-agent/actions/runs/42232346153 (lint, test, docker-build, ci-passed: success)
+release_run_url=https://github.com/phuongddx/k8s-agent/actions/runs/42232455316 (build, promote: success)
 release_promote=skipped (overlay missing)
-ghcr_public=
+ghcr_public=yes (anonymous manifest GET 200)
 branch_protection=ci-passed, enforce_admins, 0 approvals
-eval_right_cause=  /6
-eval_real_evidence=  /6
+eval_right_cause=pending (owner runs the real-model eval)
+eval_real_evidence=pending (owner runs the real-model eval)
 ```
 
 ## Handoff to Plan 3
