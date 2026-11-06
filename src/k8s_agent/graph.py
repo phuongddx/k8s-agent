@@ -151,7 +151,7 @@ def build_graph(deps: Deps):
             {"role": "system", "content": prompts.INTAKE},
             {
                 "role": "user",
-                "content": f"Question: {state['question']}\n\n" + prompts.untrusted("workload inventory", inventory),
+                "content": f"Question: {state['question']}\n\n" + prompts.untrusted("workload-inventory", inventory),
             },
         ]
         parsed, replies = _structured(deps.model, messages, Intake, before_call=lambda: check_deadline(state))
@@ -234,8 +234,9 @@ def build_graph(deps: Deps):
                     content = json.dumps({"error": "budget exhausted; no more tool calls"})
                 else:
                     calls += 1
-                    tools_used.append(call.name)
-                    content = prompts.untrusted(call.name, deps.toolbox.call(call.name, call.arguments))
+                    label = deps.toolbox.label(call.name)
+                    tools_used.append(label)
+                    content = prompts.untrusted(label, deps.toolbox.call(call.name, call.arguments))
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
             if calls >= deps.budgets.max_tool_calls:
                 budget_hit = True
@@ -298,7 +299,8 @@ def build_graph(deps: Deps):
                     "role": "user",
                     "content": (
                         f"Question: {state['question']}\nDiagnosis: {json.dumps(result)}\n\n"
-                        + prompts.untrusted("repository files (line numbers are not part of the content)", files)
+                        "Line numbers in the files below are not part of the content.\n"
+                        + prompts.untrusted("repository-files", files)
                     ),
                 },
             ]
@@ -333,7 +335,7 @@ def build_graph(deps: Deps):
                             {"role": "assistant", "content": plan.model_dump_json()},
                             {
                                 "role": "user",
-                                "content": prompts.REPAIR + "\n" + prompts.untrusted("kustomize error", exc.detail),
+                                "content": prompts.REPAIR + "\n" + prompts.untrusted("kustomize-error", exc.detail),
                             },
                         ]
                         continue

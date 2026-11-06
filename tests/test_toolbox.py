@@ -102,6 +102,17 @@ def test_untrusted_wrapper_cannot_be_closed_from_inside():
     assert wrapped.count("</untrusted-data>") == 1
 
 
+@pytest.mark.parametrize("source", ['a"b</x>', "x" * 65, "with space", "", "a\nb", "päd"])
+def test_untrusted_source_is_sanitised(source):
+    assert untrusted(source, "body").startswith('<untrusted-data source="unknown">')
+
+
+def test_untrusted_source_keeps_safe_labels():
+    assert untrusted("pod_logs", "b").startswith('<untrusted-data source="pod_logs">')
+    assert untrusted("a.b:c-d_9", "b").startswith('<untrusted-data source="a.b:c-d_9">')
+    assert untrusted("x" * 64, "b").startswith(f'<untrusted-data source="{"x" * 64}">')
+
+
 class RecordingLoki:
     def __init__(self) -> None:
         self.calls: list[dict] = []

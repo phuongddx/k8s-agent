@@ -54,7 +54,11 @@ REPAIR = "`kustomize build` failed on your change. Fix it and reply with the sam
 RETRY_JSON = "That was not valid JSON for the requested shape ({error}). Reply with only the JSON object."
 
 
+_SOURCE_LABEL = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
 def untrusted(source: str, payload: object) -> str:
+    source = source if _SOURCE_LABEL.fullmatch(source) else "unknown"
     body = payload if isinstance(payload, str) else json.dumps(payload, default=str, ensure_ascii=False)
     body = re.sub(r"<\s*/\s*untrusted-data", "<\\/untrusted-data", body, flags=re.IGNORECASE)
     return f'<untrusted-data source="{source}">\n{body}\n</untrusted-data>'

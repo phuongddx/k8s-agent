@@ -144,6 +144,10 @@ class Toolbox:
     def reset(self) -> None:
         self.loki_unavailable = False
 
+    def label(self, name: object) -> str:
+        """The tool name when it is one of ours, else "unknown": model-written names must not reach logs."""
+        return name if self._is_known(name) else "unknown"  # type: ignore[return-value]
+
     def _is_known(self, name: object) -> bool:
         return isinstance(name, str) and len(name) <= _MAX_NAME and name in self._registry
 
@@ -166,7 +170,7 @@ class Toolbox:
     def call(self, name: str, arguments: dict) -> str:
         started = time.monotonic()
         status = "ok"
-        label = name if self._is_known(name) else "unknown"
+        label = self.label(name)
         try:
             result: object = self._invoke(name, arguments)
         except KubeError as exc:
