@@ -14,6 +14,8 @@ BUSY = "Busy with another diagnosis."
 MODEL_DOWN = "Model unavailable, try again shortly."
 TIMEOUT = "The diagnosis hit its time limit. Ask a narrower question."
 EMPTY = "Ask a question about a workload on vps192."
+MAX_QUESTION_CHARS = 2000
+TOO_LONG = f"Question too long (max {MAX_QUESTION_CHARS} characters)."
 
 
 class AgentService:
@@ -23,8 +25,11 @@ class AgentService:
         self._lock = threading.Lock()
 
     def diagnose(self, question: str) -> dict:
-        if not question.strip():
+        question = question.strip()
+        if not question:
             return {"error": EMPTY}
+        if len(question) > MAX_QUESTION_CHARS:
+            return {"error": TOO_LONG}  # before the lock, the graph and any log line
         if not self._lock.acquire(blocking=False):
             log_event("diagnose.busy", question=question)
             return {"error": BUSY}

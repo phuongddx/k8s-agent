@@ -154,7 +154,7 @@ def build_graph(deps: Deps):
                 "content": f"Question: {state['question']}\n\n" + prompts.untrusted("workload inventory", inventory),
             },
         ]
-        parsed, replies = _structured(deps.model, messages, Intake)
+        parsed, replies = _structured(deps.model, messages, Intake, before_call=lambda: check_deadline(state))
         usage = _usage(state, *replies)
         known = {(w["namespace"], w["name"]): w["kind"] for w in inventory}
         names = ", ".join(f"{ns}/{name}" for ns, name in sorted(known)[:30])
@@ -176,18 +176,25 @@ def build_graph(deps: Deps):
         check_deadline(state)
         t = state["target"]
         ns, name, kind = t["namespace"], t["workload"], t["kind"]
-        report: dict = {
-            "workload": _grab(lambda: deps.cluster.describe_workload(ns, name, kind)),
-            "pods": _grab(lambda: deps.cluster.list_pods(ns, name)),
-            "events": _grab(lambda: deps.cluster.events(ns, limit=20)),
-            "pod_memory": _grab(lambda: deps.cluster.top_pods(ns)),
-            "node_memory": _grab(lambda: deps.cluster.top_nodes()),
-        }
+        report: dict = {}
+        # A check ahead of every network or git call: none starts after the deadline. A call already
+        # running at the deadline is not interrupted. The checks stay outside _grab, which would swallow them.
+        for key, fetch in (
+            ("workload", lambda: deps.cluster.describe_workload(ns, name, kind)),
+            ("pods", lambda: deps.cluster.list_pods(ns, name)),
+            ("events", lambda: deps.cluster.events(ns, limit=20)),
+            ("pod_memory", lambda: deps.cluster.top_pods(ns)),
+            ("node_memory", lambda: deps.cluster.top_nodes()),
+        ):
+            check_deadline(state)
+            report[key] = _grab(fetch)
         base_sha, repo_error, service_dir = None, None, None
+        check_deadline(state)
         try:
             base_sha = deps.workspace.sync()
             service_dir = deps.workspace.service_dir(ns)
             if service_dir:
+                check_deadline(state)
                 report["recent_commits"] = _grab(lambda: deps.workspace.log(f"{service_dir}/", 5))
             else:
                 report["recent_commits"] = {"error": f"no apps/ directory deploys to namespace {ns}"}
@@ -239,7 +246,7 @@ def build_graph(deps: Deps):
     def diagnose(state: State) -> dict:
         check_deadline(state)
         messages = state["messages"] + [{"role": "user", "content": prompts.DIAGNOSE}]
-        parsed, replies = _structured(deps.model, messages, Diagnosis)
+        parsed, replies = _structured(deps.model, messages, Diagnosis, before_call=lambda: check_deadline(state))
         if parsed is None:
             parsed = Diagnosis(
                 cause="The model did not return a valid diagnosis.", confidence="low", evidence=[], fix_kind="unknown"

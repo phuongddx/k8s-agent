@@ -58,8 +58,13 @@ def configure_logging(level: int = logging.INFO) -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+MAX_LOGGED_QUESTION_CHARS = 200
+
+
 def log_event(event: str, level: int = logging.INFO, **fields: object) -> None:
     kept = {k: v for k, v in fields.items() if k in ALLOWED_FIELDS}
+    if isinstance(kept.get("question"), str):
+        kept["question"] = kept["question"][:MAX_LOGGED_QUESTION_CHARS]
     dropped = sorted(set(fields) - ALLOWED_FIELDS)
     if dropped:
         kept["dropped_fields"] = dropped

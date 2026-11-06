@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import threading
 import time
 
 import httpx2
@@ -9,11 +10,14 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from k8s_agent import server
-from k8s_agent.graph import DeadlineExceeded
+from k8s_agent.graph import DeadlineExceeded, build_graph, run_diagnosis
 from k8s_agent.logs import configure_logging
-from k8s_agent.server import build_app, build_service, build_uvicorn_config, main
-from k8s_agent.service import BUSY, TIMEOUT
+from k8s_agent.server import BearerAuth, build_app, build_service, build_uvicorn_config, main
+from k8s_agent.service import BUSY, TIMEOUT, AgentService
 from k8s_agent.settings import Budgets, load_settings
+from tests import scenarios
+from tests.graph_fakes import ScriptedModel, as_json, scenario_deps, text
+from tests.test_graph import CRASH_INTAKE
 
 TOKEN = "s" * 40
 BASE = "http://localhost:8080"
@@ -251,3 +255,45 @@ async def test_slow_diagnosis_times_out_and_frees_the_lock(monkeypatch, tmp_path
     assert 0.5 < rec.graph_deadlines[0] < 0.8  # the graph was told 0.7 s, not the outer 1.2 s
     # The worker already finished, so the next call is not BUSY.
     assert service.open_pr("nope") != {"error": BUSY}
+
+
+@pytest.mark.anyio
+async def test_real_graph_stops_before_a_second_model_call_and_frees_the_lock(tmp_path):
+    """The inner deadline (0.5 s) passes during the first model call (0.7 s). The graph must not start the
+    re-ask, so the worker returns at about 0.7 s, before the outer limit (1.0 s)."""
+    sleeps = []
+
+    def slow_call():
+        sleeps.append(time.monotonic())
+        time.sleep(0.7)
+
+    model = ScriptedModel([text("not json"), as_json(CRASH_INTAKE)], on_call=slow_call)
+    budgets = Budgets(graph_seconds=0.5, investigate_seconds=0.2)
+    deps = scenario_deps(tmp_path, scenarios.crashloop(), model, budgets=budgets)
+    graph = build_graph(deps)
+    worker_done = threading.Event()
+
+    def diagnose_fn(question):
+        try:
+            return run_diagnosis(graph, deps, question)
+        finally:
+            worker_done.set()
+
+    service = AgentService(diagnose_fn, lambda pid: {"error": "not found"})
+    started = time.monotonic()
+    _, result = await _call(build_app(service, TOKEN, 1.0), "diagnose", {"question": "why is dropitx-api down?"})
+    assert result.structured_content == {"error": TIMEOUT}
+    assert len(sleeps) == 1
+    assert worker_done.wait(0.5)  # returned within about one call of the deadline
+    assert time.monotonic() - started < 3
+    assert service.open_pr("nope") != {"error": BUSY}
+
+
+# --- BearerAuth refuses weak tokens ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("token", ["", "x" * 31])
+def test_bearer_auth_refuses_empty_or_short_tokens(token):
+    with pytest.raises(ValueError, match="at least 32"):
+        BearerAuth(lambda *a: None, token)
+    BearerAuth(lambda *a: None, "x" * 32)

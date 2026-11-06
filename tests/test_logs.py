@@ -35,3 +35,10 @@ def test_configure_logging_quiets_third_party_loggers():
     configure_logging()
     for name in ("httpx", "httpx2", "httpcore", "uvicorn", "uvicorn.access", "uvicorn.error", "mcp", "openai"):
         assert logging.getLogger(name).getEffectiveLevel() >= logging.WARNING
+
+
+def test_question_field_is_cut_to_200_characters(caplog):
+    caplog.set_level(logging.INFO, logger="k8s_agent")
+    log_event("x", question="a" * 3_000_000)
+    [entry] = _capture(caplog)
+    assert entry["question"] == "a" * 200

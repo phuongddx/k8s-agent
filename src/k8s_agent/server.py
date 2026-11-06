@@ -39,10 +39,14 @@ from k8s_agent.tools.loki import LokiClient
 from k8s_agent.tools.toolbox import Toolbox
 
 OPEN_PR_SECONDS = 120
-# The graph stops this long before the outer limit, so its worker finishes and releases the service
-# lock while the caller still gets the timeout error.
+MIN_TOKEN_CHARS = 32
+# The graph's own deadline is this much earlier than the outer limit, and the graph starts no model, kube
+# or git call after it, so the worker normally finishes and frees the service lock before the caller times
+# out. Not a guarantee: a call already running at the deadline is not interrupted, so the worker can run on
+# by up to about one model call with its retry (roughly 81 s) or one git operation.
 GRAPH_MARGIN_SECONDS = 10
-# Every outbound client has a short connect timeout and a bounded read, so a hung peer cannot pin the lock.
+# Every outbound client has a short connect timeout and a bounded read, so one hung peer costs at most
+# about one read timeout.
 KUBE_TIMEOUT = httpx2.Timeout(30, connect=5)
 LOKI_TIMEOUT = httpx2.Timeout(30, connect=5)
 GITHUB_TIMEOUT = httpx2.Timeout(20, connect=5)
@@ -72,6 +76,8 @@ class BearerAuth:
     """Rejects requests under /mcp without `Authorization: Bearer <token>`. Constant-time compare."""
 
     def __init__(self, app: ASGIApp, token: str) -> None:
+        if len(token) < MIN_TOKEN_CHARS:
+            raise ValueError(f"The bearer token must be at least {MIN_TOKEN_CHARS} characters")
         self._app = app
         self._expected = f"Bearer {token}".encode()
 

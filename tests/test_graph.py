@@ -380,3 +380,54 @@ def test_service_dir_oserror_in_triage_still_diagnoses(tmp_path):
     assert result["cause"] == CRASH_DIAG["cause"]
     assert "proposal_id" not in result
     assert any(e["source"] == "repo" for e in result["evidence"])
+
+
+def _passing_the_deadline(clock, on_call_number):
+    """An `on_call` that jumps the clock past the 150 s graph deadline during the nth model call."""
+    state = {"calls": 0}
+
+    def advance():
+        state["calls"] += 1
+        if state["calls"] == on_call_number:
+            clock.now += 200
+
+    return advance
+
+
+def test_intake_does_not_reask_the_model_after_the_deadline(tmp_path):
+    clock = FakeClock()
+    model = ScriptedModel([text("not json"), as_json(CRASH_INTAKE)], on_call=_passing_the_deadline(clock, 1))
+    with pytest.raises(DeadlineExceeded):
+        run(make_deps(tmp_path, scenarios.crashloop(), model, clock=clock))
+    assert len(model.sent) == 1
+
+
+def test_diagnose_does_not_reask_the_model_after_the_deadline(tmp_path):
+    clock = FakeClock()
+    model = ScriptedModel(
+        [as_json(CRASH_INTAKE), text("done"), text("not json"), as_json(CRASH_DIAG)],
+        on_call=_passing_the_deadline(clock, 3),
+    )
+    with pytest.raises(DeadlineExceeded):
+        run(make_deps(tmp_path, scenarios.crashloop(), model, clock=clock))
+    assert len(model.sent) == 3
+
+
+def test_triage_stops_between_kube_calls_and_before_the_git_sync(tmp_path):
+    clock = FakeClock()
+    model = ScriptedModel([as_json(CRASH_INTAKE)])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock)
+    synced = []
+    deps.workspace.sync = lambda: synced.append(1)
+    first = deps.cluster.describe_workload
+
+    def slow_describe(*args, **kwargs):
+        clock.now += 200  # the first kube call outlasts the deadline
+        return first(*args, **kwargs)
+
+    deps.cluster.describe_workload = slow_describe
+    called = []
+    deps.cluster.list_pods = lambda *a, **k: called.append("pods")
+    with pytest.raises(DeadlineExceeded):
+        run(deps)
+    assert called == [] and synced == []
