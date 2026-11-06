@@ -122,3 +122,47 @@ def test_service_dir_maps_namespace_to_apps_directory(tmp_path):
     assert w.service_dir("auth") == "apps/auth"
     assert w.service_dir("openclaw") == "apps/openclaw"
     assert w.service_dir("nope") is None
+
+
+def test_write_through_symlinked_parent_is_refused(ws):
+    w, _, _ = ws
+    (w.path / "apps/x/link").symlink_to("../../scripts")
+    with pytest.raises(RepoError, match="outside apps"):
+        w.write_file("apps/x/link/evil.sh", "x")
+    assert not (w.path / "scripts/evil.sh").exists()
+
+
+def test_reset_removes_ignored_files(tmp_path):
+    bare = make_origin(tmp_path, {**FILES, ".gitignore": "*.dec.yaml\n"})
+    w = Workspace(tmp_path / "work" / "repo", str(bare))
+    w.sync()
+    ignored = w.path / "apps/x/base/s.dec.yaml"
+    ignored.write_text("secret\n")
+    w.reset("origin/main")
+    assert not ignored.exists()
+
+
+def test_pathspec_magic_is_disabled(ws):
+    w, _, _ = ws
+    assert w.log(":(top)") == []
+    assert w.list_files(":(top)") == []
+
+
+def test_nul_and_directory_paths_raise_repo_error(ws):
+    w, _, _ = ws
+    with pytest.raises(RepoError):
+        w.read_file("apps/x/a\x00b")
+    with pytest.raises(RepoError):
+        w.write_file("apps/x/a\x00b", "x")
+    with pytest.raises(RepoError):
+        w.write_file("apps/x/base", "x")
+
+
+def test_limits_are_clamped_to_at_least_one(ws):
+    w, bare, tmp = ws
+    push_commit(tmp, bare, "apps/x/base/cm.yaml", "v2\n", "fix(x): bump")
+    w.sync()
+    assert len(w.log("apps/x/", limit=-1)) == 1
+    out = w.read_file("apps/x/base/cm.yaml", max_lines=-1)
+    assert (out["start_line"], out["end_line"]) == (1, 1)
+    assert out["content"].startswith("1: ")

@@ -32,6 +32,7 @@ class Workspace:
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_LITERAL_PATHSPECS": "1",
             "LC_ALL": "C",
         }
         config: list[str] = []
@@ -76,13 +77,16 @@ class Workspace:
     def reset(self, ref: str = "HEAD") -> None:
         self._git("checkout", "--quiet", "--force", "--detach", ref)
         self._git("reset", "--quiet", "--hard", ref)
-        self._git("clean", "-fdq")
+        self._git("clean", "-ffdxq")
 
     def resolve(self, rel: str) -> Path:
         if not rel or rel.startswith("/") or "\\" in rel:
             raise RepoError(f"invalid path {rel!r}")
-        root = self.path.resolve()
-        target = (root / rel).resolve()
+        try:
+            root = self.path.resolve()
+            target = (root / rel).resolve()
+        except (ValueError, OSError) as exc:
+            raise RepoError(f"invalid path {rel!r}") from exc
         if target == root or not target.is_relative_to(root):
             raise RepoError(f"path {rel!r} escapes the repository")
         if ".git" in target.relative_to(root).parts:
@@ -93,9 +97,12 @@ class Workspace:
         target = self.resolve(path)
         if not target.is_file():
             raise RepoError(f"{path} is not a file")
-        lines = target.read_text(errors="replace").splitlines()
+        try:
+            lines = target.read_text(errors="replace").splitlines()
+        except OSError as exc:
+            raise RepoError(f"cannot read {path}: {exc.strerror}") from exc
         start = max(1, start_line)
-        chosen = lines[start - 1 : start - 1 + max_lines]
+        chosen = lines[start - 1 : start - 1 + max(1, max_lines)]
         numbered = [f"{start + i}: {line}" for i, line in enumerate(chosen)]
         while numbered and len("\n".join(numbered).encode()) > self._max_bytes:
             numbered.pop()
@@ -125,7 +132,7 @@ class Workspace:
 
     def log(self, path: str, limit: int = 5) -> list[dict]:
         self.resolve(path)
-        out = self._git("log", f"-n{min(limit, 20)}", "--format=%H%x1f%an%x1f%aI%x1f%s", "--", path)
+        out = self._git("log", f"-n{min(max(1, limit), 20)}", "--format=%H%x1f%an%x1f%aI%x1f%s", "--", path)
         commits = []
         for line in out.splitlines():
             sha, author, date, subject = line.split("\x1f", 3)
@@ -136,10 +143,18 @@ class Workspace:
         if not is_allowed(rel):
             raise RepoError(f"{rel} is outside apps/**")
         target = self.resolve(rel)
-        if target.is_symlink() or (self.path / rel).is_symlink():
+        # The allowlist must hold for the resolved location: a symlinked parent can move the write out of apps/.
+        resolved_rel = target.relative_to(self.path.resolve()).as_posix()
+        if not is_allowed(resolved_rel):
+            raise RepoError(f"{rel} is outside apps/**")
+        # resolve() follows links, so only the leaf itself can still be a symlink here.
+        if (self.path / rel).is_symlink():
             raise RepoError(f"{rel} is a symlink")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+        except (ValueError, OSError) as exc:
+            raise RepoError(f"cannot write {rel}: {getattr(exc, 'strerror', None) or exc}") from exc
 
     def diff(self) -> str:
         """Unified diff of the work tree against HEAD, new files included. Leaves the index staged."""
