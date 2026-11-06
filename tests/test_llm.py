@@ -141,3 +141,12 @@ def test_parse_json_object_skips_braces_in_prose():
 def test_as_message_sends_valid_json_when_raw_arguments_are_invalid():
     message = ModelReply("", [ToolCall("c", "events", {"x": 1}, "not json")]).as_message()
     assert message["tool_calls"][0]["function"]["arguments"] == '{"x": 1}'
+
+
+def test_default_client_ignores_proxy_environment(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.invalid:3128")
+    model = OpenAIChatModel("https://api.z.ai/api/coding/paas/v4", "zai-key", "glm-5.3")
+    http = model._client._client
+    assert http._trust_env is False
+    assert http._mounts == {}

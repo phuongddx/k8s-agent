@@ -66,8 +66,8 @@ class OpenAIChatModel:
         http_client: httpx2.Client | None = None,
     ) -> None:
         kwargs: dict = {"base_url": base_url, "api_key": api_key, "timeout": timeout, "max_retries": max_retries}
-        if http_client is not None:
-            kwargs["http_client"] = http_client
+        # The client carries the model API key: never let proxy environment variables reroute it.
+        kwargs["http_client"] = http_client if http_client is not None else openai.DefaultHttpxClient(trust_env=False)
         self._client = openai.OpenAI(**kwargs)
         self._model = model
 

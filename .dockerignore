@@ -7,3 +7,6 @@
 docs
 evals
 tests
+.text2prod
+.env
+.env.*

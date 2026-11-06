@@ -235,6 +235,14 @@ def test_every_http_client_has_explicit_timeouts(monkeypatch, tmp_path):
         assert timeout.write is not None and timeout.pool is not None
 
 
+def test_outbound_clients_ignore_proxy_environment(monkeypatch, tmp_path):
+    rec = Recorder(monkeypatch, tmp_path)
+    build_service(rec.settings)
+    assert rec.github_http._trust_env is False
+    assert rec.loki_http._trust_env is False
+    assert rec.deps.model._client._client._trust_env is False
+
+
 def test_graph_gets_a_deadline_before_the_outer_limit(monkeypatch, tmp_path):
     rec = Recorder(monkeypatch, tmp_path)
     build_service(rec.settings)

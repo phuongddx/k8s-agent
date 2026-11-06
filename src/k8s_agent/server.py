@@ -157,7 +157,7 @@ def build_service(settings: Settings) -> AgentService:
     )
     loki = LokiClient(
         settings.loki_url,
-        httpx2.Client(timeout=LOKI_TIMEOUT),
+        httpx2.Client(timeout=LOKI_TIMEOUT, trust_env=False),
         default_hours=b.loki_default_hours,
         max_hours=b.loki_max_hours,
         max_lines=b.log_max_lines,
@@ -178,7 +178,7 @@ def build_service(settings: Settings) -> AgentService:
         budgets=dataclasses.replace(b, graph_seconds=max(b.graph_seconds - GRAPH_MARGIN_SECONDS, b.graph_seconds / 2)),
     )
     graph = build_graph(deps)
-    github = GitHubClient(settings.repo, settings.bot_gh_token, httpx2.Client(timeout=GITHUB_TIMEOUT))
+    github = GitHubClient(settings.repo, settings.bot_gh_token, httpx2.Client(timeout=GITHUB_TIMEOUT, trust_env=False))
     opener = PrOpener(workspace, renderer, store, github, settings.bot_login, settings.bot_email)
     return AgentService(lambda question: run_diagnosis(graph, deps, question), opener.open_pr)
 
