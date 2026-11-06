@@ -123,3 +123,21 @@ def test_parse_json_object():
 
 def test_as_message_without_tool_calls():
     assert ModelReply("text").as_message() == {"role": "assistant", "content": "text"}
+
+
+def test_empty_choices_is_model_unavailable():
+    def handler(request):
+        return httpx2.Response(200, json={**_completion({"role": "assistant", "content": "x"}), "choices": []})
+
+    with pytest.raises(ModelUnavailable, match="EmptyResponse"):
+        _model(handler).complete([{"role": "user", "content": "hi"}])
+
+
+def test_parse_json_object_skips_braces_in_prose():
+    assert parse_json_object('Format {cause}: {"a": 1}') == {"a": 1}
+    assert parse_json_object('{"a": 1}\nNote: use {placeholder}') == {"a": 1}
+
+
+def test_as_message_sends_valid_json_when_raw_arguments_are_invalid():
+    message = ModelReply("", [ToolCall("c", "events", {"x": 1}, "not json")]).as_message()
+    assert message["tool_calls"][0]["function"]["arguments"] == '{"x": 1}'

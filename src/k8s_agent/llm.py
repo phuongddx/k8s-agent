@@ -36,10 +36,19 @@ class ModelReply:
         message: dict = {"role": "assistant", "content": self.content or ""}
         if self.tool_calls:
             message["tool_calls"] = [
-                {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.raw_arguments}}
+                {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": _arguments_json(c)}}
                 for c in self.tool_calls
             ]
         return message
+
+
+def _arguments_json(call: ToolCall) -> str:
+    """The arguments as valid JSON for the transcript: the model's own text when it parses, else re-encoded."""
+    try:
+        json.loads(call.raw_arguments)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps(call.arguments)
+    return call.raw_arguments
 
 
 class ChatModel(Protocol):
@@ -70,6 +79,8 @@ class OpenAIChatModel:
             response = self._client.chat.completions.create(**kwargs)
         except openai.APIError as exc:
             raise ModelUnavailable(type(exc).__name__) from exc
+        if not response.choices:
+            raise ModelUnavailable("EmptyResponse")
         message = response.choices[0].message
         calls = []
         for call in message.tool_calls or []:
@@ -99,10 +110,14 @@ def parse_json_object(text: str | None) -> dict:
     """Parse the first JSON object in a model reply, tolerating ```json fences and prose around it."""
     if not text:
         raise ValueError("empty reply")
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("no JSON object in reply")
-    value = json.loads(text[start : end + 1])
-    if not isinstance(value, dict):
-        raise ValueError("reply is not a JSON object")
-    return value
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("no JSON object in reply")

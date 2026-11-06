@@ -113,9 +113,23 @@ TOOL_SPECS = [
 ]
 
 
+_MAX_NAME = 64
+
+
+def _render(result: object, max_bytes: int) -> str:
+    """JSON text that is valid UTF-8 (lone surrogates replaced) and capped at max_bytes."""
+    data = json.dumps(result, default=str, ensure_ascii=False).encode("utf-8", errors="replace")
+    if len(data) > max_bytes:
+        return data[:max_bytes].decode("utf-8", errors="ignore") + " ...[truncated]"
+    return data.decode("utf-8")
+
+
 class Toolbox:
     def __init__(self, cluster: ClusterTools, loki: LokiClient, workspace: Workspace, max_bytes: int = 32768) -> None:
         self._max_bytes = max_bytes
+        self._declared = {
+            s["function"]["name"]: frozenset(s["function"]["parameters"]["properties"]) for s in TOOL_SPECS
+        }
         self.loki_unavailable = False
         self._registry: dict[str, Callable[..., object]] = {
             **cluster.registry(),
@@ -130,16 +144,31 @@ class Toolbox:
     def reset(self) -> None:
         self.loki_unavailable = False
 
+    def _is_known(self, name: object) -> bool:
+        return isinstance(name, str) and len(name) <= _MAX_NAME and name in self._registry
+
+    def _invoke(self, name: str, arguments: object) -> object:
+        if not self._is_known(name):
+            if isinstance(name, str) and "secret" in name.lower():
+                log_event(
+                    "tool.secret_request",
+                    logging.WARNING,
+                    tool=name if isinstance(name, str) and len(name) <= _MAX_NAME else "unknown",
+                )
+            raise LookupError("unknown tool")
+        if not isinstance(arguments, dict):
+            raise TypeError("arguments must be a JSON object")
+        unexpected = set(arguments) - self._declared.get(name, frozenset())
+        if unexpected:
+            raise TypeError("unexpected keyword argument(s): " + ", ".join(sorted(unexpected)))
+        return self._registry[name](**arguments)
+
     def call(self, name: str, arguments: dict) -> str:
         started = time.monotonic()
         status = "ok"
-        fn = self._registry.get(name)
+        label = name if self._is_known(name) else "unknown"
         try:
-            if fn is None:
-                if "secret" in name.lower():
-                    log_event("tool.secret_request", logging.WARNING, tool=name)
-                raise LookupError(f"unknown tool {name}")
-            result: object = fn(**arguments)
+            result: object = self._invoke(name, arguments)
         except KubeError as exc:
             status, result = "error", {"error": f"Kubernetes API {exc.status}: {exc.message}"}
         except LokiUnavailable as exc:
@@ -147,8 +176,12 @@ class Toolbox:
             status, result = "error", {"error": f"{exc}. Loki is unavailable; use pod_logs instead."}
         except (LokiQueryError, RepoError, LookupError, ValueError, TypeError) as exc:
             status, result = "error", {"error": str(exc)}
-        text = json.dumps(result, default=str, ensure_ascii=False)
-        if len(text.encode()) > self._max_bytes:
-            text = text.encode()[: self._max_bytes].decode(errors="ignore") + " ...[truncated]"
-        log_event("tool.call", tool=name, status=status, duration_ms=round((time.monotonic() - started) * 1000))
+        except Exception as exc:  # a model-triggered failure must become a result, never abort the diagnosis
+            status, result = "error", {"error": f"{type(exc).__name__}: {exc}"}
+        try:
+            text = _render(result, self._max_bytes)
+        except Exception as exc:
+            status = "error"
+            text = _render({"error": f"{type(exc).__name__}: {exc}"}, self._max_bytes)
+        log_event("tool.call", tool=label, status=status, duration_ms=round((time.monotonic() - started) * 1000))
         return text
