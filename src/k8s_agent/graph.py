@@ -1,5 +1,6 @@
 """The diagnose graph: intake -> triage -> investigate -> diagnose -> propose_fix (config only)."""
 
+import contextlib
 import json
 import time
 from collections.abc import Callable
@@ -7,11 +8,11 @@ from dataclasses import dataclass, field
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from k8s_agent import prompts
 from k8s_agent.diffcheck import PathNotAllowed, check_paths, overlays_for, paths_in_diff
-from k8s_agent.llm import ChatModel, ModelReply, parse_json_object
+from k8s_agent.llm import ChatModel, ModelReply, ModelUnavailable, parse_json_object
 from k8s_agent.proposals import ProposalStore
 from k8s_agent.render import Renderer, RenderError
 from k8s_agent.repo import RepoError, Workspace
@@ -20,10 +21,17 @@ from k8s_agent.tools.cluster import ClusterTools
 from k8s_agent.tools.toolbox import Toolbox
 
 MAX_FILES_BYTES = 32768
+PROPOSE_RESERVE_SECONDS = 20
+MAX_SUMMARY_CHARS = 72
+MAX_REASON_CHARS = 200
 
 
 class DeadlineExceeded(Exception):
     """The graph passed its overall time limit."""
+
+
+class _OutOfTime(Exception):
+    """propose_fix would start work with less than PROPOSE_RESERVE_SECONDS left."""
 
 
 class Intake(BaseModel):
@@ -55,6 +63,17 @@ class FileEdit(BaseModel):
 class FixPlan(BaseModel):
     summary: str
     edits: list[FileEdit]
+
+    @field_validator("summary")
+    @classmethod
+    def _one_short_line(cls, value: str) -> str:
+        """The summary becomes a commit and PR title: one line, at most MAX_SUMMARY_CHARS."""
+        line = " ".join(value.split())
+        if not line:
+            raise ValueError("summary must not be empty")
+        if len(line) > MAX_SUMMARY_CHARS:
+            line = line[: MAX_SUMMARY_CHARS - 1].rstrip() + "\u2026"
+        return line
 
 
 class State(TypedDict, total=False):
@@ -94,12 +113,14 @@ def _usage(state: State, *replies: ModelReply) -> dict:
 
 
 def _structured[T: BaseModel](
-    model: ChatModel, messages: list[dict], schema: type[T]
+    model: ChatModel, messages: list[dict], schema: type[T], before_call: Callable[[], None] | None = None
 ) -> tuple[T | None, list[ModelReply]]:
-    """Ask for JSON, validate it, and re-ask once on failure."""
+    """Ask for JSON, validate it, and re-ask once on failure. `before_call` runs ahead of every model call."""
     replies = []
     convo = list(messages)
     for _ in range(2):
+        if before_call:
+            before_call()
         reply = model.complete(convo)
         replies.append(reply)
         try:
@@ -170,7 +191,7 @@ def build_graph(deps: Deps):
                 report["recent_commits"] = _grab(lambda: deps.workspace.log(f"{service_dir}/", 5))
             else:
                 report["recent_commits"] = {"error": f"no apps/ directory deploys to namespace {ns}"}
-        except RepoError as exc:
+        except (RepoError, OSError) as exc:
             repo_error = str(exc)
             report["recent_commits"] = {"error": f"repository unavailable: {exc}"}
         return {"triage_report": report, "base_sha": base_sha, "repo_error": repo_error, "service_dir": service_dir}
@@ -238,10 +259,23 @@ def build_graph(deps: Deps):
         return {**_usage(state, *replies), "diagnosis_result": result}
 
     def propose_fix(state: State) -> dict:
-        check_deadline(state)
         result = dict(state["diagnosis_result"])
         service_dir, base_sha = state["service_dir"], state["base_sha"]
         assert base_sha is not None and service_dir is not None
+
+        def keep_time() -> None:
+            if state["deadline"] - deps.clock() < PROPOSE_RESERVE_SECONDS:
+                raise _OutOfTime()
+
+        def without_diff(reason: str, replies: list[ModelReply]) -> dict:
+            summary = result.get("fix_summary") or "Config change likely needed"
+            result["fix_summary"] = f"{summary} (no diff: {reason})"
+            return {**_usage(state, *replies), "diagnosis_result": result}
+
+        try:
+            keep_time()
+        except _OutOfTime:
+            return without_diff("not enough time left to prepare a fix", [])
         replies: list[ModelReply] = []
         reason = "the model returned no usable fix"
         try:
@@ -262,7 +296,7 @@ def build_graph(deps: Deps):
                 },
             ]
             for attempt in range(2):
-                plan, new_replies = _structured(deps.model, messages, FixPlan)
+                plan, new_replies = _structured(deps.model, messages, FixPlan, before_call=keep_time)
                 replies += new_replies
                 if plan is None:
                     break
@@ -274,8 +308,16 @@ def build_graph(deps: Deps):
                     reason = "the proposed edits changed nothing"
                     break
                 service = check_paths(paths_in_diff(diff))
+                if f"apps/{service}" != service_dir:
+                    reason = "fix touched a different service than the one diagnosed"
+                    break
+                overlays = overlays_for(deps.workspace.path, service)
+                if not overlays:
+                    reason = f"no kustomize overlay for apps/{service}"
+                    break
                 try:
-                    for overlay in overlays_for(deps.workspace.path, service):
+                    for overlay in overlays:
+                        keep_time()
                         deps.renderer.render(deps.workspace.path, overlay)
                 except RenderError as exc:
                     reason = f"kustomize build failed: {exc.detail[:300]}"
@@ -300,16 +342,18 @@ def build_graph(deps: Deps):
                 )
                 result.update(fix_summary=plan.summary, proposal_id=proposal.id, diff=diff)
                 return {**_usage(state, *replies), "diagnosis_result": result}
+        except _OutOfTime:
+            reason = "not enough time left to prepare a fix"
         except (RepoError, PathNotAllowed) as exc:
-            reason = str(exc)
+            reason = str(exc)[:MAX_REASON_CHARS]
+        except ModelUnavailable:
+            reason = "the model was unavailable while preparing the fix"
+        except Exception as exc:  # a failed fix must never discard the finished diagnosis
+            reason = f"unexpected {type(exc).__name__} while preparing the fix"
         finally:
-            try:
+            with contextlib.suppress(Exception):  # a failed cleanup must not mask the result; sync() resets again
                 deps.workspace.reset(base_sha)
-            except RepoError:
-                pass
-        summary = result.get("fix_summary") or "Config change likely needed"
-        result["fix_summary"] = f"{summary} (no diff: {reason})"
-        return {**_usage(state, *replies), "diagnosis_result": result}
+        return without_diff(reason, replies)
 
     def after_intake(state: State) -> str:
         return END if state.get("clarify") else "triage"

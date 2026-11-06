@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 
 from k8s_agent.graph import DeadlineExceeded, build_graph, run_diagnosis
@@ -6,6 +8,7 @@ from k8s_agent.render import KustomizeRenderer
 from k8s_agent.repo import Workspace
 from k8s_agent.settings import Budgets
 from tests import scenarios
+from tests.gitrepo import git
 from tests.graph_fakes import FakeClock, FakeRenderer, ScriptedModel, as_json, scenario_deps, text, tool_calls
 
 CRASH_INTAKE = {
@@ -262,3 +265,118 @@ def test_fix_lands_in_the_apps_dir_of_the_namespace(tmp_path):
     assert stats["namespace"] == "stress-api"
     assert "apps/stress-app-be/vps192/kustomization.yaml" in result["diff"]
     assert "chore: seed" in model.sent[1][1]["content"]
+
+
+def _assert_diagnosis_kept(result, reason):
+    assert "diff" not in result and "proposal_id" not in result
+    assert reason in result["fix_summary"]
+    assert result["cause"] == CRASH_DIAG["cause"] and result["confidence"] == "high"
+    assert result["evidence"][: len(CRASH_DIAG["evidence"])] == CRASH_DIAG["evidence"]
+
+
+def _clone_is_clean(deps):
+    return git(deps.workspace.path, "status", "--porcelain") == ""
+
+
+def test_edit_under_a_service_without_overlay_stores_no_proposal(tmp_path):
+    s = scenarios.crashloop()
+    bare = dataclasses.replace(
+        s, repo_files={k: v for k, v in s.repo_files.items() if not k.endswith("kustomization.yaml")}
+    )
+    plan = {"summary": "note", "edits": [{"path": "apps/dropitx-api/notes.txt", "content": "hello\n"}]}
+    renderer = FakeRenderer()
+    model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG), as_json(plan)])
+    deps = make_deps(tmp_path, bare, model, renderer=renderer)
+    result, _ = run(deps)
+    _assert_diagnosis_kept(result, "no kustomize overlay for apps/dropitx-api")
+    assert renderer.rendered == []
+    assert deps.store._items == {}
+    assert _clone_is_clean(deps)
+
+
+def test_no_time_left_skips_the_fix_without_raising(tmp_path):
+    clock = FakeClock()
+
+    def advance():
+        if len(model.sent) == 3:  # the diagnose call: 10 s remain afterwards
+            clock.now = 140
+
+    renderer = FakeRenderer()
+    model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG)], on_call=advance)
+    result, _ = run(make_deps(tmp_path, scenarios.crashloop(), model, renderer=renderer, clock=clock))
+    _assert_diagnosis_kept(result, "not enough time left to prepare a fix")
+    assert renderer.rendered == [] and len(model.sent) == 3
+
+
+def test_repair_is_skipped_when_time_runs_out_after_a_failed_render(tmp_path):
+    clock = FakeClock()
+
+    class SlowFailingRenderer(FakeRenderer):
+        def render(self, repo_dir, overlay):
+            clock.now = 140
+            super().render(repo_dir, overlay)
+
+    renderer = SlowFailingRenderer(fail_times=1)
+    model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG), as_json(FIX_PLAN), as_json(FIX_PLAN)])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, renderer=renderer, clock=clock)
+    result, _ = run(deps)
+    _assert_diagnosis_kept(result, "not enough time left to prepare a fix")
+    assert len(model.sent) == 4 and len(renderer.rendered) == 1
+    assert _clone_is_clean(deps)
+
+
+def test_model_failure_while_planning_the_fix_keeps_the_diagnosis(tmp_path):
+    model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG), ModelUnavailable("RateLimitError")])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model)
+    result, _ = run(deps)
+    _assert_diagnosis_kept(result, "no diff")
+    assert "model" in result["fix_summary"]
+    assert _clone_is_clean(deps)
+
+
+def test_renderer_crash_keeps_the_diagnosis_and_cleans_the_clone(tmp_path):
+    class MissingBinary:
+        def render(self, repo_dir, overlay):
+            raise FileNotFoundError("kustomize")
+
+    model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG), as_json(FIX_PLAN)])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, renderer=MissingBinary())
+    result, _ = run(deps)
+    _assert_diagnosis_kept(result, "FileNotFoundError")
+    assert deps.store._items == {}
+    assert _clone_is_clean(deps)
+
+
+def test_fix_for_a_different_service_is_refused(tmp_path):
+    plan = {"summary": "x", "edits": [{"path": "apps/other-svc/vps192/configmap.yaml", "content": "kind: ConfigMap\n"}]}
+    renderer = FakeRenderer()
+    model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG), as_json(plan)])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, renderer=renderer)
+    result, _ = run(deps)
+    _assert_diagnosis_kept(result, "fix touched a different service than the one diagnosed")
+    assert renderer.rendered == [] and deps.store._items == {}
+    assert _clone_is_clean(deps)
+
+
+def test_fix_summary_is_one_short_line(tmp_path):
+    plan = {**FIX_PLAN, "summary": "line one\nline two " + "x" * 200}
+    model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG), as_json(plan)])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model)
+    result, _ = run(deps)
+    stored = deps.store.get(result["proposal_id"]).summary
+    assert "\n" not in stored and 0 < len(stored) <= 72
+    assert stored.startswith("line one line two ") and result["fix_summary"] == stored
+
+
+def test_service_dir_oserror_in_triage_still_diagnoses(tmp_path):
+    model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG)])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model)
+
+    def broken(namespace):
+        raise PermissionError("apps/ is unreadable")
+
+    deps.workspace.service_dir = broken
+    result, _ = run(deps)
+    assert result["cause"] == CRASH_DIAG["cause"]
+    assert "proposal_id" not in result
+    assert any(e["source"] == "repo" for e in result["evidence"])
