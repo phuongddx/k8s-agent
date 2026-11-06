@@ -53,6 +53,9 @@ def configure_logging(level: int = logging.INFO) -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)
+    # Library INFO records carry URLs and bodies that bypass the log_event allowlist.
+    for name in ("httpx", "httpx2", "httpcore", "uvicorn", "uvicorn.access", "uvicorn.error", "mcp", "openai"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def log_event(event: str, level: int = logging.INFO, **fields: object) -> None:

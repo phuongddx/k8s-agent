@@ -60,6 +60,13 @@ def test_repo_must_be_owner_slash_name():
         load_settings({**BASE, "REPO": "https://github.com/x/y"})
 
 
+def test_repr_hides_secrets():
+    s = load_settings(BASE)
+    text = repr(s)
+    for secret in (BASE["MCP_BEARER_TOKEN"], BASE["ZAI_API_KEY"], BASE["BOT_GH_TOKEN"]):
+        assert secret not in text
+
+
 def test_overrides_and_trailing_slash():
     s = load_settings({**BASE, "LOKI_URL": "http://loki:3100/", "MAX_TOOL_CALLS": "5", "BOT_EMAIL": "1+b@x.y"})
     assert s.loki_url == "http://loki:3100"

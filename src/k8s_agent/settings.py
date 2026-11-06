@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 OPENCLAW_MCP_TIMEOUT_SECONDS = 180
@@ -25,9 +25,9 @@ class Budgets:
 
 @dataclass(frozen=True)
 class Settings:
-    mcp_bearer_token: str
-    zai_api_key: str
-    bot_gh_token: str
+    mcp_bearer_token: str = field(repr=False)
+    zai_api_key: str = field(repr=False)
+    bot_gh_token: str = field(repr=False)
     bot_login: str
     bot_email: str
     model: str
