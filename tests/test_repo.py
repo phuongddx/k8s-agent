@@ -182,3 +182,41 @@ def test_limits_are_clamped_to_at_least_one(ws):
     out = w.read_file("apps/x/base/cm.yaml", max_lines=-1)
     assert (out["start_line"], out["end_line"]) == (1, 1)
     assert out["content"].startswith("1: ")
+
+
+def test_missing_file_error_lists_the_files_in_its_directory(ws):
+    w, _, _ = ws
+    with pytest.raises(RepoError) as info:
+        w.read_file("apps/x/base/deployment.yaml")
+    message = str(info.value)
+    assert message.startswith("apps/x/base/deployment.yaml is not a file")
+    assert "apps/x/base/cm.yaml" in message and "apps/x/base/kustomization.yaml" in message
+
+
+def test_missing_file_error_falls_back_to_the_nearest_existing_directory(ws):
+    w, _, _ = ws
+    with pytest.raises(RepoError, match=r"apps/x/vps192/kustomization.yaml"):
+        w.read_file("apps/x/vps192/overlays/prod/patch.yaml")
+
+
+def test_reading_a_directory_lists_its_files(ws):
+    w, _, _ = ws
+    with pytest.raises(RepoError, match=r"apps/x/base/cm.yaml"):
+        w.read_file("apps/x/base")
+
+
+def test_missing_file_listing_is_capped_at_ten(tmp_path):
+    files = {f"apps/big/base/f{i:02d}.yaml": "a: b\n" for i in range(15)}
+    w = Workspace(tmp_path / "work" / "repo", str(make_origin(tmp_path, files)))
+    w.sync()
+    with pytest.raises(RepoError) as info:
+        w.read_file("apps/big/base/nope.yaml")
+    listed = [part for part in str(info.value).split() if part.startswith("apps/big/base/f")]
+    assert len(listed) == 10
+
+
+def test_missing_file_at_the_top_level_lists_nothing(ws):
+    w, _, _ = ws
+    with pytest.raises(RepoError) as info:
+        w.read_file("nothing-here.yaml")
+    assert str(info.value) == "nothing-here.yaml is not a file"

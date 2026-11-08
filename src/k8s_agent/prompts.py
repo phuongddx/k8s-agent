@@ -32,6 +32,7 @@ You cannot change anything. Use the tools to find the cause of the owner's probl
 Follow the runbook row for the symptom, then stop calling tools as soon as the cause is clear.
 {RUNBOOK}
 Exposure can come from an Ingress or a Traefik IngressRoute; check both before concluding a service is not exposed, and never conclude 'not reachable' from one resource type alone.
+Before `read_repo_file`, find exact paths with `repo_log` or the manifest paths in the triage report; do not guess paths.
 Cite evidence precisely: event reason and time, log lines with their timestamps, manifest path:line.
 {UNTRUSTED_RULE}
 When you are done, reply in plain text with your findings and no tool calls."""
