@@ -3,7 +3,7 @@ import json
 import httpx2
 import pytest
 
-from k8s_agent.llm import ModelReply, ModelUnavailable, OpenAIChatModel, ToolCall, parse_json_object
+from k8s_agent.llm import ModelReply, ModelTimeout, ModelUnavailable, OpenAIChatModel, ToolCall, parse_json_object
 
 
 def _completion(message, usage=(120, 30)):
@@ -150,3 +150,103 @@ def test_default_client_ignores_proxy_environment(monkeypatch):
     http = model._client._client
     assert http._trust_env is False
     assert http._mounts == {}
+
+
+def test_per_call_timeout_overrides_the_client_timeout():
+    seen = {}
+
+    def handler(request):
+        seen["timeout"] = request.extensions["timeout"]
+        return httpx2.Response(200, json=_completion({"role": "assistant", "content": "ok"}))
+
+    model = _model(handler)
+    model.complete([{"role": "user", "content": "hi"}])
+    assert seen["timeout"]["read"] == 40
+    model.complete([{"role": "user", "content": "hi"}], timeout=7)
+    assert seen["timeout"]["read"] == 7
+    model.complete([{"role": "user", "content": "hi"}])
+    assert seen["timeout"]["read"] == 40
+
+
+def test_per_call_max_retries_zero_disables_the_retry():
+    attempts = []
+
+    def handler(request):
+        attempts.append(1)
+        return httpx2.Response(503, json={"error": {"message": "busy"}}, headers={"retry-after-ms": "10"})
+
+    with pytest.raises(ModelUnavailable):
+        _model(handler).complete([{"role": "user", "content": "hi"}], max_retries=0)
+    assert len(attempts) == 1
+
+
+def test_a_timed_out_call_raises_model_timeout():
+    def handler(request):
+        raise httpx2.ReadTimeout("slow", request=request)
+
+    with pytest.raises(ModelTimeout) as info:
+        _model(handler).complete([{"role": "user", "content": "hi"}], timeout=3, max_retries=0)
+    assert isinstance(info.value, ModelUnavailable)
+    assert str(info.value) == "APITimeoutError"
+
+
+def _failure(status=None, headers=None, exc=None):
+    def handler(request):
+        if exc:
+            raise exc(request)
+        return httpx2.Response(status, json={"error": {"message": "x"}}, headers=headers or {})
+
+    return handler
+
+
+def _fails_with(handler):
+    with pytest.raises(ModelUnavailable) as info:
+        _model(handler).complete([{"role": "user", "content": "hi"}], max_retries=0)
+    return info.value
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503])
+def test_retryable_http_failures_are_marked_retryable(status):
+    assert _fails_with(_failure(status)).retryable is True
+
+
+@pytest.mark.parametrize("status", [400, 401, 404])
+def test_other_http_failures_are_not_retryable(status):
+    err = _fails_with(_failure(status))
+    assert err.retryable is False and err.retry_after is None
+
+
+def test_timeouts_and_connection_errors_are_retryable():
+    timeout = _fails_with(_failure(exc=lambda r: httpx2.ReadTimeout("slow", request=r)))
+    assert isinstance(timeout, ModelTimeout) and timeout.retryable is True
+    conn = _fails_with(_failure(exc=lambda r: httpx2.ConnectError("refused", request=r)))
+    assert not isinstance(conn, ModelTimeout) and conn.retryable is True
+
+
+def test_retry_after_headers_are_parsed_into_seconds():
+    assert _fails_with(_failure(429, {"retry-after": "60"})).retry_after == 60.0
+    assert _fails_with(_failure(429, {"retry-after-ms": "250"})).retry_after == 0.25
+    assert _fails_with(_failure(429, {"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"})).retry_after is None
+
+
+def test_per_call_options_keep_the_injected_http_client():
+    http = httpx2.Client(transport=httpx2.MockTransport(lambda r: httpx2.Response(500)))
+    model = OpenAIChatModel("https://api.z.ai/api/coding/paas/v4", "zai-key", "glm-5.3", http_client=http)
+    copy = model._client.with_options(timeout=5, max_retries=0)
+    assert copy._client is http
+
+
+def test_per_call_options_keep_proxy_environment_ignored(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    model = OpenAIChatModel("https://api.z.ai/api/coding/paas/v4", "zai-key", "glm-5.3")
+    copy = model._client.with_options(timeout=5, max_retries=0)
+    assert copy._client is model._client._client
+    assert copy._client._trust_env is False and copy._client._mounts == {}
+
+
+@pytest.mark.parametrize("value", ["-5", "abc", "", "nan", "inf", "1e999"])
+def test_odd_retry_after_values_never_crash_and_never_go_negative(value):
+    err = _fails_with(_failure(429, {"retry-after-ms": value}))
+    assert err.retry_after is None or err.retry_after >= 0
+    err = _fails_with(_failure(429, {"retry-after": value}))
+    assert err.retry_after is None or err.retry_after >= 0

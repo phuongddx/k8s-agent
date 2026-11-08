@@ -7,11 +7,14 @@ import re
 import subprocess
 from pathlib import Path
 
-from k8s_agent.diffcheck import is_allowed
+from k8s_agent.diffcheck import OWN_MANIFESTS, is_allowed, is_own_manifest
 
 _CREDENTIAL_HELPER = (
     '!f() { test "$1" = get && printf \'username=x-access-token\\npassword=%s\\n\' "$K8S_AGENT_GIT_TOKEN"; }; f'
 )
+
+
+MAX_HINT_FILES = 10
 
 
 class RepoError(Exception):
@@ -96,7 +99,7 @@ class Workspace:
     def read_file(self, path: str, start_line: int = 1, max_lines: int = 200) -> dict:
         target = self.resolve(path)
         if not target.is_file():
-            raise RepoError(f"{path} is not a file")
+            raise RepoError(f"{path} is not a file{self._nearby_files(target)}")
         try:
             lines = target.read_text(errors="replace").splitlines()
         except OSError as exc:
@@ -113,6 +116,25 @@ class Workspace:
             "total_lines": len(lines),
             "content": "\n".join(numbered),
         }
+
+    def _nearby_files(self, missing: Path) -> str:
+        """Up to MAX_HINT_FILES tracked files in the nearest existing directory above `missing`, to help the
+        caller pick a real path. Empty when that directory is the repository root."""
+        root = self.path.resolve()
+        directory = missing
+        while not directory.is_dir() and directory != root:
+            directory = directory.parent
+        if directory == root or not directory.is_relative_to(root):
+            return ""
+        rel = directory.relative_to(root).as_posix()
+        try:
+            files = self.list_files(f"{rel}/")
+        except RepoError:
+            return ""
+        if not files:
+            return ""
+        shown = ", ".join(files[:MAX_HINT_FILES])
+        return f". Files under {rel}/: {shown}{', ...' if len(files) > MAX_HINT_FILES else ''}"
 
     def list_files(self, rel_dir: str) -> list[str]:
         self.resolve(rel_dir)
@@ -140,11 +162,15 @@ class Workspace:
         return commits
 
     def write_file(self, rel: str, content: str) -> None:
+        if is_own_manifest(rel):
+            raise RepoError(f"{rel}: {OWN_MANIFESTS}")
         if not is_allowed(rel):
             raise RepoError(f"{rel} is outside apps/**")
         target = self.resolve(rel)
         # The allowlist must hold for the resolved location: a symlinked parent can move the write out of apps/.
         resolved_rel = target.relative_to(self.path.resolve()).as_posix()
+        if is_own_manifest(resolved_rel):
+            raise RepoError(f"{rel} resolves to {resolved_rel}: {OWN_MANIFESTS}")
         if not is_allowed(resolved_rel):
             raise RepoError(f"{rel} is outside apps/**")
         # resolve() follows links, so only the leaf itself can still be a symlink here.

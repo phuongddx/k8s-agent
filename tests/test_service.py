@@ -15,6 +15,7 @@ STATS = {
     "tools": ["pod_logs"],
     "calls": 1,
     "budget_hit": False,
+    "time_hit": True,
     "prompt_tokens": 500,
     "completion_tokens": 90,
 }
@@ -36,6 +37,7 @@ def test_diagnose_returns_result_and_logs_stats(caplog):
     assert entry["question"] == "why?"
     assert entry["tools"] == ["pod_logs"]
     assert entry["prompt_tokens"] == 500 and entry["outcome"] == "ok" and "duration_ms" in entry
+    assert entry["budget_hit"] is False and entry["time_hit"] is True
 
 
 def test_error_mapping():

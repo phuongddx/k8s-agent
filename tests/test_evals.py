@@ -104,10 +104,10 @@ class _DeadlineModel:
     def __init__(self, inner):
         self.inner = inner
 
-    def complete(self, messages, tools=None):
+    def complete(self, messages, tools=None, timeout=None, max_retries=None):
         if any("crashlooping" in (m.get("content") or "") for m in messages):
             raise DeadlineExceeded()
-        return self.inner.complete(messages, tools)
+        return self.inner.complete(messages, tools, timeout, max_retries)
 
 
 def _healthy_replies():

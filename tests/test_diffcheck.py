@@ -45,6 +45,33 @@ def test_is_allowed(path, ok):
     assert is_allowed(path) is ok
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["apps/k8s-agent/base/rbac.yaml", "apps/k8s-agent/vps192/kustomization.yaml", "apps/K8s-Agent/base/a.yaml"],
+)
+def test_the_agents_own_manifests_are_not_allowed(path):
+    assert is_allowed(path) is False
+    with pytest.raises(PathNotAllowed, match="the agent may not change its own manifests"):
+        check_paths([path])
+
+
+def test_own_manifests_are_named_even_when_mixed_with_other_services():
+    with pytest.raises(PathNotAllowed, match=r"own manifests.*apps/k8s-agent/base/rbac.yaml"):
+        check_paths(["apps/x/base/a.yaml", "apps/k8s-agent/base/rbac.yaml"])
+
+
+def test_a_service_whose_name_only_starts_like_the_agent_is_allowed():
+    assert is_allowed("apps/k8s-agent-docs/base/a.yaml") is True
+    assert check_paths(["apps/k8s-agent-docs/base/a.yaml"]) == "k8s-agent-docs"
+
+
+def test_a_diff_touching_the_agents_manifests_is_refused():
+    diff = MODIFY.replace("llm-gateway", "k8s-agent")
+    assert paths_in_diff(diff) == ["apps/k8s-agent/base/deployment.yaml"]
+    with pytest.raises(PathNotAllowed, match="own manifests"):
+        check_paths(paths_in_diff(diff))
+
+
 def test_paths_in_diff_reads_headers_and_skips_dev_null():
     assert paths_in_diff(MODIFY) == ["apps/llm-gateway/base/deployment.yaml"]
     assert paths_in_diff(NEW_FILE) == ["apps/x/vps192/new.yaml"]

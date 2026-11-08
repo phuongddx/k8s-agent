@@ -9,6 +9,7 @@ from k8s_agent.kube import KubeApi, KubeError
 WORKLOAD_PLURALS = {"Deployment": "deployments", "StatefulSet": "statefulsets", "DaemonSet": "daemonsets"}
 METRICS = "/apis/metrics.k8s.io/v1beta1"
 TRAEFIK = "/apis/traefik.io/v1alpha1"
+NETWORKING = "/apis/networking.k8s.io/v1"
 _BINARY = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40}
 _DECIMAL = {"n": 1e-9, "u": 1e-6, "m": 1e-3, "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12}
 
@@ -86,6 +87,15 @@ def _resources(spec: dict) -> list[dict]:
         }
         for c in spec.get("containers", [])
     ]
+
+
+def _backend(backend: dict) -> str:
+    service = backend.get("service")
+    if service:
+        port = service.get("port", {})
+        return f"{service.get('name')}:{port.get('number', port.get('name'))}"
+    resource = backend.get("resource", {})
+    return f"resource:{resource.get('kind')}/{resource.get('name')}"
 
 
 def _labels_match(selector: dict[str, str], labels: dict[str, str]) -> bool:
@@ -334,6 +344,38 @@ class ClusterTools:
             )
         return out
 
+    def get_ingresses(self, namespace: str | None = None) -> list[dict]:
+        """networking.k8s.io/v1 Ingresses: class, hosts, path -> backend routes and TLS hosts. No annotations."""
+        _check_optional(namespace, "namespace")
+        path = f"{NETWORKING}/namespaces/{namespace}/ingresses" if namespace else f"{NETWORKING}/ingresses"
+        out = []
+        for item in self._api.get_json(path).get("items", []):
+            meta, spec = item["metadata"], item.get("spec", {})
+            routes = []
+            if spec.get("defaultBackend"):
+                routes.append({"host": None, "path": "*", "backend": _backend(spec["defaultBackend"])})
+            for rule in spec.get("rules", []) or []:
+                for p in (rule.get("http") or {}).get("paths", []) or []:
+                    routes.append(
+                        {
+                            "host": rule.get("host"),
+                            "path": p.get("path", "/"),
+                            "backend": _backend(p.get("backend", {})),
+                        }
+                    )
+            out.append(
+                {
+                    "namespace": meta["namespace"],
+                    "name": meta["name"],
+                    "class": spec.get("ingressClassName")
+                    or meta.get("annotations", {}).get("kubernetes.io/ingress.class"),
+                    "hosts": sorted({r["host"] for r in spec.get("rules", []) or [] if r.get("host")}),
+                    "paths": routes,
+                    "tls_hosts": sorted({h for t in spec.get("tls", []) or [] for h in t.get("hosts", []) or []}),
+                }
+            )
+        return out
+
     def get_endpoints(self, namespace: str, name: str) -> dict:
         _check_name(namespace, "namespace")
         _check_name(name, "name")
@@ -364,6 +406,7 @@ class ClusterTools:
             "top_nodes": self.top_nodes,
             "rollout_status": self.rollout_status,
             "get_ingressroutes": self.get_ingressroutes,
+            "get_ingresses": self.get_ingresses,
             "get_endpoints": self.get_endpoints,
             "get_configmap": self.get_configmap,
         }

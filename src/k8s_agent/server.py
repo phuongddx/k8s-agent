@@ -41,9 +41,10 @@ from k8s_agent.tools.toolbox import Toolbox
 OPEN_PR_SECONDS = 120
 MIN_TOKEN_CHARS = 32
 # The graph's own deadline is this much earlier than the outer limit, and the graph starts no model, kube
-# or git call after it, so the worker normally finishes and frees the service lock before the caller times
-# out. Not a guarantee: a call already running at the deadline is not interrupted, so the worker can run on
-# by up to about one model call with its retry (roughly 81 s) or one git operation.
+# or git call after it, and every model call is cut to end before it, so the worker normally finishes and
+# frees the service lock before the caller times out. Model calls cannot run past the graph deadline. Tool
+# calls can (a kube or Loki call of up to 30 s, or one git operation): one already running at the deadline
+# is not interrupted, so those are the remaining overrun sources.
 GRAPH_MARGIN_SECONDS = 10
 # Every outbound client has a short connect timeout and a bounded read, so one hung peer costs at most
 # about one read timeout.
@@ -176,6 +177,7 @@ def build_service(settings: Settings) -> AgentService:
         renderer=renderer,
         store=store,
         budgets=dataclasses.replace(b, graph_seconds=max(b.graph_seconds - GRAPH_MARGIN_SECONDS, b.graph_seconds / 2)),
+        model_timeout=settings.model_timeout_seconds,
     )
     graph = build_graph(deps)
     github = GitHubClient(settings.repo, settings.bot_gh_token, httpx2.Client(timeout=GITHUB_TIMEOUT, trust_env=False))

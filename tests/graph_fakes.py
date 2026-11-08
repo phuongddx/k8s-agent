@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx2
 
 from k8s_agent.graph import Deps
-from k8s_agent.llm import ModelReply, ToolCall
+from k8s_agent.llm import ModelReply, ModelTimeout, ToolCall
 from k8s_agent.proposals import ProposalStore
 from k8s_agent.render import RenderError
 from k8s_agent.repo import Workspace
@@ -34,7 +34,7 @@ class ScriptedModel:
         self.tools_offered: list[list[dict] | None] = []
         self.on_call = on_call
 
-    def complete(self, messages, tools=None):
+    def complete(self, messages, tools=None, timeout=None, max_retries=None):
         self.sent.append(copy.deepcopy(messages))
         self.tools_offered.append(tools)
         if self.on_call:
@@ -42,6 +42,30 @@ class ScriptedModel:
         if not self.replies:
             raise AssertionError("ScriptedModel ran out of replies")
         reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+class TimedModel:
+    """A ChatModel that lives on a FakeClock. Each scripted reply takes `duration` seconds. A call whose
+    per-call `timeout` is shorter than that raises a retryable ModelTimeout after exactly `timeout` seconds,
+    as the real adapter does. A scripted Exception is raised after `duration`. Records (clock at call,
+    timeout, max_retries) for every call. The fake never retries on its own: that is the graph's job, and
+    `max_retries` is recorded so tests can assert the graph switched the SDK retry off."""
+
+    def __init__(self, clock, script) -> None:
+        self.clock = clock
+        self.script = list(script)
+        self.calls: list[tuple[float, float | None, int | None]] = []
+
+    def complete(self, messages, tools=None, timeout=None, max_retries=None):
+        self.calls.append((self.clock.now, timeout, max_retries))
+        duration, reply = self.script.pop(0)
+        if timeout is not None and duration > timeout:
+            self.clock.now += timeout
+            raise ModelTimeout("APITimeoutError", retryable=True)
+        self.clock.now += duration
         if isinstance(reply, Exception):
             raise reply
         return reply
@@ -98,7 +122,7 @@ def loki_transport(lines: list[tuple[str, str]], up: bool = True) -> httpx2.Mock
         values = [
             [str(int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1e9)), line] for ts, line in lines
         ]
-        result = [{"stream": {"namespace": "kube-system", "app": "traefik"}, "values": values}] if values else []
+        result = [{"stream": {"namespace": "kube-system", "container": "traefik"}, "values": values}] if values else []
         return httpx2.Response(200, json={"status": "success", "data": {"resultType": "streams", "result": result}})
 
     return httpx2.MockTransport(handler)

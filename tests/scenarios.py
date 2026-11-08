@@ -546,3 +546,32 @@ def healthy() -> Scenario:
 
 
 ALL = {s.name: s for s in (crashloop(), oomkilled(), imagepull(), pending(), gateway_5xx(), healthy())}
+
+
+def ingress(ns, name, host, service, port, path="/", tls_hosts=None, class_name="traefik", path_type="Prefix"):
+    """A networking.k8s.io/v1 Ingress routing one host and path to one Service port."""
+    return {
+        "metadata": {
+            "namespace": ns,
+            "name": name,
+            "annotations": {"kubectl.kubernetes.io/last-applied-configuration": "{...large dump...}"},
+        },
+        "spec": {
+            "ingressClassName": class_name,
+            "tls": [{"hosts": tls_hosts if tls_hosts is not None else [host], "secretName": f"{name}-tls"}],
+            "rules": [
+                {
+                    "host": host,
+                    "http": {
+                        "paths": [
+                            {
+                                "path": path,
+                                "pathType": path_type,
+                                "backend": {"service": {"name": service, "port": {"number": port}}},
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+    }

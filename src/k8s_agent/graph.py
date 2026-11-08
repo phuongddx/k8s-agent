@@ -3,6 +3,7 @@
 import contextlib
 import json
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, TypedDict
@@ -12,7 +13,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from k8s_agent import prompts
 from k8s_agent.diffcheck import PathNotAllowed, check_paths, overlays_for, paths_in_diff
-from k8s_agent.llm import ChatModel, ModelReply, ModelUnavailable, parse_json_object
+from k8s_agent.llm import ChatModel, ModelReply, ModelTimeout, ModelUnavailable, parse_json_object
 from k8s_agent.proposals import ProposalStore
 from k8s_agent.render import Renderer, RenderError
 from k8s_agent.repo import RepoError, Workspace
@@ -22,12 +23,20 @@ from k8s_agent.tools.toolbox import Toolbox
 
 MAX_FILES_BYTES = 32768
 PROPOSE_RESERVE_SECONDS = 20
+MODEL_RESERVE_SECONDS = 5  # a model call must end this long before the graph deadline
+MODEL_RETRY_DELAY_SECONDS = 1.0  # wait before the graph's one retry when the server sent no Retry-After
+MODEL_RETRY_MIN_SECONDS = 10  # a retry needs at least this much usable time left after the wait
 MAX_SUMMARY_CHARS = 72
 MAX_REASON_CHARS = 200
 
 
 class DeadlineExceeded(Exception):
     """The graph passed its overall time limit."""
+
+
+class NoModelTime(DeadlineExceeded):
+    """The graph deadline, not the model, stopped a model call: no time to start one, no time to retry,
+    or a call timed out on a timeout that had been cut below the model's own."""
 
 
 class _OutOfTime(Exception):
@@ -88,6 +97,7 @@ class State(TypedDict, total=False):
     messages: list[dict]
     tools_used: list[str]
     budget_hit: bool
+    time_hit: bool
     diagnosis_result: dict
     prompt_tokens: int
     completion_tokens: int
@@ -103,6 +113,8 @@ class Deps:
     store: ProposalStore
     budgets: Budgets = field(default_factory=Budgets)
     clock: Callable[[], float] = time.monotonic
+    model_timeout: float = 40  # per-call timeout when time allows; a call is cut shorter near the deadline
+    sleep: Callable[[float], None] = time.sleep
 
 
 def _usage(state: State, *replies: ModelReply) -> dict:
@@ -113,7 +125,10 @@ def _usage(state: State, *replies: ModelReply) -> dict:
 
 
 def _structured[T: BaseModel](
-    model: ChatModel, messages: list[dict], schema: type[T], before_call: Callable[[], None] | None = None
+    complete: Callable[[list[dict]], ModelReply],
+    messages: list[dict],
+    schema: type[T],
+    before_call: Callable[[], None] | None = None,
 ) -> tuple[T | None, list[ModelReply]]:
     """Ask for JSON, validate it, and re-ask once on failure. `before_call` runs ahead of every model call."""
     replies = []
@@ -121,7 +136,7 @@ def _structured[T: BaseModel](
     for _ in range(2):
         if before_call:
             before_call()
-        reply = model.complete(convo)
+        reply = complete(convo)
         replies.append(reply)
         try:
             return schema.model_validate(parse_json_object(reply.content)), replies
@@ -129,6 +144,24 @@ def _structured[T: BaseModel](
             error = str(exc).splitlines()[0]
             convo += [reply.as_message(), {"role": "user", "content": prompts.RETRY_JSON.format(error=error)}]
     return None, replies
+
+
+def _unfinished_diagnosis(state: State) -> Diagnosis:
+    """A low-confidence diagnosis from what investigate gathered, for when the model cannot answer in time."""
+    cause = "The model did not finish in time to write a diagnosis."
+    findings = next(
+        (m["content"] for m in reversed(state["messages"]) if m["role"] == "assistant" and m.get("content")), ""
+    )
+    if findings:
+        cause += f" Last findings from the investigation: {findings[: MAX_REASON_CHARS * 2]}"
+    counts = Counter(state.get("tools_used", []))
+    tools = ", ".join(f"{name} x{n}" for name, n in counts.items()) or "none"
+    return Diagnosis(
+        cause=cause,
+        confidence="low",
+        evidence=[Evidence(source="tools", detail=f"Tools called: {tools}")],
+        fix_kind="unknown",
+    )
 
 
 def _grab(fn: Callable[[], object]) -> object:
@@ -143,6 +176,37 @@ def build_graph(deps: Deps):
         if deps.clock() >= state["deadline"]:
             raise DeadlineExceeded()
 
+    def complete_within_deadline(state: State, messages: list[dict], tools: list[dict] | None = None) -> ModelReply:
+        """One model call that ends before the graph deadline, with at most one graph-level retry.
+
+        The SDK's own retry is off: it could sleep through a long Retry-After past the deadline. Each failure
+        is classified first. NoModelTime means the deadline stopped us: no usable time, or a timeout that had
+        been cut below the model's own. Anything else is the model's fault and becomes ModelUnavailable. A
+        transient failure (timeout, connection error, 429, 5xx) is retried once, only when the wait plus a
+        real attempt still fit; a failed retry is classified the same way."""
+
+        def usable() -> float:
+            return state["deadline"] - deps.clock() - MODEL_RESERVE_SECONDS
+
+        for attempt in (1, 2):
+            if usable() <= 0:
+                raise NoModelTime()
+            timeout = min(deps.model_timeout, usable())
+            try:
+                return deps.model.complete(messages, tools, timeout=timeout, max_retries=0)
+            except ModelUnavailable as exc:
+                if isinstance(exc, ModelTimeout) and timeout < deps.model_timeout:
+                    raise NoModelTime() from exc
+                if exc.retryable and attempt == 1:
+                    delay = MODEL_RETRY_DELAY_SECONDS if exc.retry_after is None else exc.retry_after
+                    if usable() - delay >= MODEL_RETRY_MIN_SECONDS:
+                        deps.sleep(delay)
+                        continue
+                if isinstance(exc, ModelTimeout):
+                    raise ModelUnavailable(str(exc)) from exc
+                raise
+        raise AssertionError("unreachable")
+
     def intake(state: State) -> dict:
         check_deadline(state)
         deps.toolbox.reset()
@@ -154,7 +218,12 @@ def build_graph(deps: Deps):
                 "content": f"Question: {state['question']}\n\n" + prompts.untrusted("workload-inventory", inventory),
             },
         ]
-        parsed, replies = _structured(deps.model, messages, Intake, before_call=lambda: check_deadline(state))
+        parsed, replies = _structured(
+            lambda convo: complete_within_deadline(state, convo),
+            messages,
+            Intake,
+            before_call=lambda: check_deadline(state),
+        )
         usage = _usage(state, *replies)
         known = {(w["namespace"], w["name"]): w["kind"] for w in inventory}
         names = ", ".join(f"{ns}/{name}" for ns, name in sorted(known)[:30])
@@ -206,7 +275,9 @@ def build_graph(deps: Deps):
     def investigate(state: State) -> dict:
         check_deadline(state)
         t = state["target"]
-        end = min(deps.clock() + deps.budgets.investigate_seconds, state["deadline"])
+        start = deps.clock()
+        end = min(start + deps.budgets.investigate_seconds, state["deadline"])
+        deadline_ends_it = state["deadline"] <= start + deps.budgets.investigate_seconds
         messages: list[dict] = [
             {"role": "system", "content": prompts.INVESTIGATE},
             {
@@ -218,19 +289,32 @@ def build_graph(deps: Deps):
                 ),
             },
         ]
-        calls, budget_hit, tools_used, replies = 0, False, [], []
+        calls, tools_used, replies = 0, [], []
+        limits = {"budget_hit": False, "time_hit": False}
+
+        def hit_limit() -> None:
+            """Time ran out: the graph deadline is a time hit, the investigate budget a budget hit."""
+            limits["time_hit" if deadline_ends_it else "budget_hit"] = True
+
         while True:
             if deps.clock() >= end:
-                budget_hit = True
+                hit_limit()
                 break
-            reply = deps.model.complete(messages, deps.toolbox.specs())
+            try:
+                reply = complete_within_deadline(state, messages, deps.toolbox.specs())
+            except NoModelTime:  # no time for a model call: diagnose with what is gathered
+                limits["time_hit"] = True
+                break
             replies.append(reply)
             messages.append(reply.as_message())
             if not reply.tool_calls:
                 break
             for call in reply.tool_calls:
-                if calls >= deps.budgets.max_tool_calls or deps.clock() >= end:
-                    budget_hit = True
+                if calls >= deps.budgets.max_tool_calls:
+                    limits["budget_hit"] = True
+                    content = json.dumps({"error": "budget exhausted; no more tool calls"})
+                elif deps.clock() >= end:
+                    hit_limit()
                     content = json.dumps({"error": "budget exhausted; no more tool calls"})
                 else:
                     calls += 1
@@ -239,32 +323,47 @@ def build_graph(deps: Deps):
                     content = prompts.untrusted(label, deps.toolbox.call(call.name, call.arguments))
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
             if calls >= deps.budgets.max_tool_calls:
-                budget_hit = True
-            if budget_hit:
+                limits["budget_hit"] = True
+            if limits["budget_hit"] or limits["time_hit"]:
                 break
-        return {**_usage(state, *replies), "messages": messages, "tools_used": tools_used, "budget_hit": budget_hit}
+        return {**_usage(state, *replies), "messages": messages, "tools_used": tools_used, **limits}
 
     def diagnose(state: State) -> dict:
         check_deadline(state)
         messages = state["messages"] + [{"role": "user", "content": prompts.DIAGNOSE}]
-        parsed, replies = _structured(deps.model, messages, Diagnosis, before_call=lambda: check_deadline(state))
+        time_hit = state.get("time_hit", False)
+        try:
+            parsed, replies = _structured(
+                lambda convo: complete_within_deadline(state, convo),
+                messages,
+                Diagnosis,
+                before_call=lambda: check_deadline(state),
+            )
+        except NoModelTime:
+            parsed, replies = _unfinished_diagnosis(state), []
+            time_hit = True
         if parsed is None:
             parsed = Diagnosis(
                 cause="The model did not return a valid diagnosis.", confidence="low", evidence=[], fix_kind="unknown"
             )
         result = parsed.model_dump()
-        if state.get("budget_hit"):
+        budget_hit = state.get("budget_hit", False)
+        if budget_hit or time_hit:
             result["confidence"] = "low"
             b = deps.budgets
-            result["cause"] = (
-                f"Budget hit ({b.max_tool_calls} tool calls or {b.investigate_seconds:g} s) "
-                f"before the investigation finished. {result['cause']}"
-            )
+            budget = f"Budget hit ({b.max_tool_calls} tool calls or {b.investigate_seconds:g} s)"
+            if budget_hit and time_hit:
+                prefix = f"{budget} and the time limit was reached before the investigation finished."
+            elif budget_hit:
+                prefix = f"{budget} before the investigation finished."
+            else:
+                prefix = "Time limit reached before the investigation finished;"
+            result["cause"] = f"{prefix} {result['cause']}"
         if deps.toolbox.loki_unavailable:
             result["evidence"].append({"source": "loki", "detail": "Loki was unavailable; Kubernetes logs only."})
         if state.get("repo_error"):
             result["evidence"].append({"source": "repo", "detail": f"Config repo unavailable: {state['repo_error']}"})
-        return {**_usage(state, *replies), "diagnosis_result": result}
+        return {**_usage(state, *replies), "diagnosis_result": result, "time_hit": time_hit}
 
     def propose_fix(state: State) -> dict:
         result = dict(state["diagnosis_result"])
@@ -305,7 +404,9 @@ def build_graph(deps: Deps):
                 },
             ]
             for attempt in range(2):
-                plan, new_replies = _structured(deps.model, messages, FixPlan, before_call=keep_time)
+                plan, new_replies = _structured(
+                    lambda convo: complete_within_deadline(state, convo), messages, FixPlan, before_call=keep_time
+                )
                 replies += new_replies
                 if plan is None:
                     break
@@ -351,7 +452,7 @@ def build_graph(deps: Deps):
                 )
                 result.update(fix_summary=plan.summary, proposal_id=proposal.id, diff=diff)
                 return {**_usage(state, *replies), "diagnosis_result": result}
-        except _OutOfTime:
+        except (_OutOfTime, NoModelTime):
             reason = "not enough time left to prepare a fix"
         except (RepoError, PathNotAllowed) as exc:
             reason = str(exc)[:MAX_REASON_CHARS]
@@ -402,6 +503,7 @@ def run_diagnosis(graph, deps: Deps, question: str) -> tuple[dict, dict]:
         "tools": final.get("tools_used", []),
         "calls": len(final.get("tools_used", [])),
         "budget_hit": final.get("budget_hit", False),
+        "time_hit": final.get("time_hit", False),
         "prompt_tokens": final.get("prompt_tokens", 0),
         "completion_tokens": final.get("completion_tokens", 0),
     }
