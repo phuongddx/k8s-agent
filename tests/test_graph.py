@@ -10,7 +10,7 @@ from k8s_agent.llm import ModelUnavailable
 from k8s_agent.logs import JsonFormatter
 from k8s_agent.render import KustomizeRenderer
 from k8s_agent.repo import Workspace
-from k8s_agent.service import AgentService
+from k8s_agent.service import MODEL_DOWN, AgentService
 from k8s_agent.settings import Budgets
 from tests import scenarios
 from tests.gitrepo import git
@@ -615,14 +615,55 @@ def test_a_non_retryable_failure_is_not_retried(tmp_path):
     assert len(model.calls) == 3 and sleeps == []
 
 
-def test_a_retry_after_that_does_not_fit_is_not_waited_for(tmp_path):
-    # Diagnose starts at t=2 with 50 s usable. A 429 with Retry-After: 60 cannot be honoured.
+def test_a_throttled_model_whose_retry_does_not_fit_is_unavailable_not_a_time_hit(tmp_path):
+    # Diagnose starts at t=2 with 50 s usable. A 429 with Retry-After: 60 cannot be waited for.
     model, deps, sleeps = _diagnose_phase(tmp_path, [(1, _unavailable(retry_after=60)), (1, as_json(CRASH_DIAG))], 57)
-    result, stats = run(deps)  # not TIMEOUT
+    with pytest.raises(ModelUnavailable) as info:
+        run(deps)
+    assert type(info.value) is ModelUnavailable
     assert len(model.calls) == 3 and sleeps == []
-    assert stats["time_hit"] is True and stats["budget_hit"] is False
-    assert result["confidence"] == "low"
+
+
+def test_an_uncapped_timeout_with_no_room_to_retry_is_unavailable_not_a_time_hit(tmp_path):
+    # Diagnose starts at t=2 with 45 s usable, so the 40 s timeout is not a cap. The hung call ends at
+    # t=42 with 3 s usable: no retry fits, and the model, not the deadline, is the problem.
+    model, deps, sleeps = _diagnose_phase(tmp_path, [(100, as_json(CRASH_DIAG)), (100, as_json(CRASH_DIAG))], 52)
+    with pytest.raises(ModelUnavailable) as info:
+        run(deps)
+    assert type(info.value) is ModelUnavailable
+    assert [t for _, t, _ in model.calls][2:] == [40] and sleeps == []
+
+
+def test_an_uncapped_propose_fix_timeout_with_no_room_to_retry_says_the_model_was_unavailable(tmp_path):
+    # The fix plan call starts at t=3 with 43 s usable (uncapped) and hangs; no retry fits afterwards.
+    _, deps, _ = _diagnose_phase(tmp_path, [(1, as_json(CRASH_DIAG)), (100, as_json(FIX_PLAN))], 51)
+    result, _ = run(deps)
+    _assert_diagnosis_kept(result, "the model was unavailable while preparing the fix")
+
+
+def test_a_failed_retry_is_classified_like_the_first_failure(tmp_path):
+    # A transient failure at t=2 with 100 s usable is retried; the retry times out under a cap of 20 s.
+    model, deps, sleeps = _diagnose_phase(tmp_path, [(1, _unavailable()), (100, as_json(CRASH_DIAG))], 28)
+    result, stats = run(deps)
+    assert sleeps == [1.0] and stats["time_hit"] is True
     assert result["cause"].startswith("Time limit reached before the investigation finished;")
+
+
+def test_a_503_with_a_long_retry_after_at_intake_is_model_down_not_a_timeout(tmp_path):
+    clock = FakeClock()
+    model = TimedModel(clock, [(1, _unavailable(retry_after=300))])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock)
+    service = AgentService(lambda q: run_diagnosis(build_graph(deps), deps, q), None)
+    assert service.diagnose("why is dropitx-api crashlooping?") == {"error": MODEL_DOWN}
+    assert len(model.calls) == 1
+
+
+def test_a_connection_error_near_the_deadline_at_intake_is_model_down(tmp_path):
+    clock = FakeClock()
+    model = TimedModel(clock, [(1, ModelUnavailable("APIConnectionError", retryable=True))])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(graph_seconds=12))
+    service = AgentService(lambda q: run_diagnosis(build_graph(deps), deps, q), None)
+    assert service.diagnose("why is dropitx-api crashlooping?") == {"error": MODEL_DOWN}
 
 
 def test_a_retry_after_that_fits_is_honoured(tmp_path):

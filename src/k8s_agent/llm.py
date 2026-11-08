@@ -1,8 +1,10 @@
 """The chat model behind one small interface, so tests can script it.
 
-The real adapter uses the `openai` SDK against Z.ai's OpenAI-compatible endpoint. The SDK's
-own retry (max_retries=1, exponential backoff) gives the spec's one retry on timeouts,
-connection errors, 429 and 5xx. Structured output is JSON in the message text, parsed and
+The real adapter uses the `openai` SDK against Z.ai's OpenAI-compatible endpoint. `complete`
+takes a per-call `timeout` and `max_retries`; the graph passes max_retries=0 and does its own
+single retry, within its deadline, for the failures the adapter marks `retryable` (timeout,
+connection error, 429, 5xx). The constructor's max_retries=1 only serves direct callers such as
+the manual eval. Structured output is JSON in the message text, parsed and
 validated by the caller; the Z.ai endpoint's `response_format` support is not relied on."""
 
 import json
@@ -24,7 +26,7 @@ class ModelUnavailable(Exception):
 
 
 class ModelTimeout(ModelUnavailable):
-    """The model call ran past its time limit (the SDK's own retry included)."""
+    """One model call ran past its per-call timeout."""
 
 
 @dataclass(frozen=True)

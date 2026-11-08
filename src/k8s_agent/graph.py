@@ -179,10 +179,11 @@ def build_graph(deps: Deps):
     def complete_within_deadline(state: State, messages: list[dict], tools: list[dict] | None = None) -> ModelReply:
         """One model call that ends before the graph deadline, with at most one graph-level retry.
 
-        The SDK's own retry is off: it could sleep through a long Retry-After past the deadline. A retry is
-        made only for transient failures and only when the wait plus a real attempt still fit. NoModelTime
-        means the deadline stopped us (nothing was wrong with the model); a ModelUnavailable is a model
-        failure, an uncapped timeout included."""
+        The SDK's own retry is off: it could sleep through a long Retry-After past the deadline. Each failure
+        is classified first. NoModelTime means the deadline stopped us: no usable time, or a timeout that had
+        been cut below the model's own. Anything else is the model's fault and becomes ModelUnavailable. A
+        transient failure (timeout, connection error, 429, 5xx) is retried once, only when the wait plus a
+        real attempt still fit; a failed retry is classified the same way."""
 
         def usable() -> float:
             return state["deadline"] - deps.clock() - MODEL_RESERVE_SECONDS
@@ -194,15 +195,14 @@ def build_graph(deps: Deps):
             try:
                 return deps.model.complete(messages, tools, timeout=timeout, max_retries=0)
             except ModelUnavailable as exc:
+                if isinstance(exc, ModelTimeout) and timeout < deps.model_timeout:
+                    raise NoModelTime() from exc
                 if exc.retryable and attempt == 1:
                     delay = MODEL_RETRY_DELAY_SECONDS if exc.retry_after is None else exc.retry_after
-                    if usable() - delay < MODEL_RETRY_MIN_SECONDS:
-                        raise NoModelTime() from exc
-                    deps.sleep(delay)
-                    continue
+                    if usable() - delay >= MODEL_RETRY_MIN_SECONDS:
+                        deps.sleep(delay)
+                        continue
                 if isinstance(exc, ModelTimeout):
-                    if timeout < deps.model_timeout:
-                        raise NoModelTime() from exc
                     raise ModelUnavailable(str(exc)) from exc
                 raise
         raise AssertionError("unreachable")

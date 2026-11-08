@@ -242,3 +242,11 @@ def test_per_call_options_keep_proxy_environment_ignored(monkeypatch):
     copy = model._client.with_options(timeout=5, max_retries=0)
     assert copy._client is model._client._client
     assert copy._client._trust_env is False and copy._client._mounts == {}
+
+
+@pytest.mark.parametrize("value", ["-5", "abc", "", "nan", "inf", "1e999"])
+def test_odd_retry_after_values_never_crash_and_never_go_negative(value):
+    err = _fails_with(_failure(429, {"retry-after-ms": value}))
+    assert err.retry_after is None or err.retry_after >= 0
+    err = _fails_with(_failure(429, {"retry-after": value}))
+    assert err.retry_after is None or err.retry_after >= 0
