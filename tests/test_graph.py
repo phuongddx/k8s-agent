@@ -14,7 +14,16 @@ from k8s_agent.service import AgentService
 from k8s_agent.settings import Budgets
 from tests import scenarios
 from tests.gitrepo import git
-from tests.graph_fakes import FakeClock, FakeRenderer, ScriptedModel, as_json, scenario_deps, text, tool_calls
+from tests.graph_fakes import (
+    FakeClock,
+    FakeRenderer,
+    ScriptedModel,
+    TimedModel,
+    as_json,
+    scenario_deps,
+    text,
+    tool_calls,
+)
 
 CRASH_INTAKE = {
     "namespace": "dropitx-api",
@@ -459,3 +468,100 @@ def test_triage_stops_between_kube_calls_and_before_the_git_sync(tmp_path):
     with pytest.raises(DeadlineExceeded):
         run(deps)
     assert called == [] and synced == []
+
+
+def test_model_calls_never_outlast_the_graph_deadline(tmp_path):
+    nodes = tool_calls(("top_nodes", {}))
+    clock = FakeClock()
+    model = TimedModel(
+        clock,
+        [
+            (10, as_json(CRASH_INTAKE)),
+            (30, nodes),
+            (30, nodes),
+            (25, nodes),
+            (10, text("done")),
+            (5, as_json({**CRASH_DIAG, "fix_kind": "unknown"})),
+        ],
+    )
+    deps = make_deps(
+        tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(investigate_seconds=100, graph_seconds=120)
+    )
+    result, _ = run(deps)
+    for started, timeout, _ in model.calls:
+        assert timeout is not None and timeout <= 120 - started - 5
+    assert [t for _, t, _ in model.calls] == [40, 40, 40, 40, 20, 10]
+    assert result["cause"] == CRASH_DIAG["cause"]
+
+
+def test_sdk_retry_is_disabled_when_two_attempts_do_not_fit(tmp_path):
+    nodes = tool_calls(("top_nodes", {}))
+    clock = FakeClock()
+    model = TimedModel(
+        clock,
+        [
+            (10, as_json(CRASH_INTAKE)),
+            (30, nodes),
+            (30, nodes),
+            (25, nodes),
+            (10, text("done")),
+            (5, as_json({**CRASH_DIAG, "fix_kind": "unknown"})),
+        ],
+    )
+    deps = make_deps(
+        tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(investigate_seconds=100, graph_seconds=120)
+    )
+    run(deps)
+    # 115 s and 105 s of usable time fit two 40 s attempts; 75 s and less do not.
+    assert [r for _, _, r in model.calls] == [None, None, 0, 0, 0, 0]
+
+
+def test_slow_final_diagnose_call_returns_a_low_confidence_diagnosis(tmp_path):
+    five = tool_calls(*[("top_nodes", {})] * 5)
+    clock = FakeClock()
+    model = TimedModel(
+        clock, [(5, as_json(CRASH_INTAKE)), (25, five), (25, five), (25, five), (90, as_json(CRASH_DIAG))]
+    )
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(graph_seconds=100))
+    result, stats = run(deps)  # no DeadlineExceeded
+    assert model.calls[-1][1] == 15  # 100 s deadline - 80 s elapsed - 5 s reserve
+    assert clock.now == 95
+    assert stats["budget_hit"] is True
+    assert result["confidence"] == "low" and result["fix_kind"] == "unknown"
+    assert result["cause"].startswith("Budget hit (12 tool calls or 90 s)")
+    assert "did not finish in time" in result["cause"]
+    assert {"source": "tools", "detail": "Tools called: top_nodes x12"} in result["evidence"]
+
+
+def test_no_model_call_when_five_seconds_or_less_remain(tmp_path):
+    nodes = tool_calls(("top_nodes", {}))
+    clock = FakeClock()
+    model = TimedModel(clock, [(10, as_json(CRASH_INTAKE)), (40, nodes), (40, nodes), (25, nodes)])
+    deps = make_deps(
+        tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(investigate_seconds=100, graph_seconds=120)
+    )
+    result, _ = run(deps)
+    assert clock.now == 115 and len(model.calls) == 4  # diagnose had 5 s left: it made no call
+    assert result["confidence"] == "low" and result["cause"].startswith("Budget hit")
+
+
+def test_intake_makes_no_model_call_without_time(tmp_path):
+    clock = FakeClock()
+    model = TimedModel(clock, [(1, as_json(CRASH_INTAKE))])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(graph_seconds=4))
+    with pytest.raises(DeadlineExceeded):
+        run(deps)
+    assert model.calls == []
+
+
+def test_a_timed_out_investigate_call_hands_over_to_diagnose(tmp_path):
+    clock = FakeClock()
+    model = TimedModel(
+        clock,
+        [(5, as_json(CRASH_INTAKE)), (100, text("never arrives")), (5, as_json({**CRASH_DIAG, "fix_kind": "unknown"}))],
+    )
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(graph_seconds=60))
+    result, stats = run(deps)
+    assert stats["budget_hit"] is True
+    assert result["confidence"] == "low" and result["cause"].startswith("Budget hit")
+    assert [t for _, t, _ in model.calls] == [40, 40, 10]

@@ -176,6 +176,7 @@ def build_service(settings: Settings) -> AgentService:
         renderer=renderer,
         store=store,
         budgets=dataclasses.replace(b, graph_seconds=max(b.graph_seconds - GRAPH_MARGIN_SECONDS, b.graph_seconds / 2)),
+        model_timeout=settings.model_timeout_seconds,
     )
     graph = build_graph(deps)
     github = GitHubClient(settings.repo, settings.bot_gh_token, httpx2.Client(timeout=GITHUB_TIMEOUT, trust_env=False))

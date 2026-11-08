@@ -3,7 +3,7 @@ import json
 import httpx2
 import pytest
 
-from k8s_agent.llm import ModelReply, ModelUnavailable, OpenAIChatModel, ToolCall, parse_json_object
+from k8s_agent.llm import ModelReply, ModelTimeout, ModelUnavailable, OpenAIChatModel, ToolCall, parse_json_object
 
 
 def _completion(message, usage=(120, 30)):
@@ -150,3 +150,41 @@ def test_default_client_ignores_proxy_environment(monkeypatch):
     http = model._client._client
     assert http._trust_env is False
     assert http._mounts == {}
+
+
+def test_per_call_timeout_overrides_the_client_timeout():
+    seen = {}
+
+    def handler(request):
+        seen["timeout"] = request.extensions["timeout"]
+        return httpx2.Response(200, json=_completion({"role": "assistant", "content": "ok"}))
+
+    model = _model(handler)
+    model.complete([{"role": "user", "content": "hi"}])
+    assert seen["timeout"]["read"] == 40
+    model.complete([{"role": "user", "content": "hi"}], timeout=7)
+    assert seen["timeout"]["read"] == 7
+    model.complete([{"role": "user", "content": "hi"}])
+    assert seen["timeout"]["read"] == 40
+
+
+def test_per_call_max_retries_zero_disables_the_retry():
+    attempts = []
+
+    def handler(request):
+        attempts.append(1)
+        return httpx2.Response(503, json={"error": {"message": "busy"}}, headers={"retry-after-ms": "10"})
+
+    with pytest.raises(ModelUnavailable):
+        _model(handler).complete([{"role": "user", "content": "hi"}], max_retries=0)
+    assert len(attempts) == 1
+
+
+def test_a_timed_out_call_raises_model_timeout():
+    def handler(request):
+        raise httpx2.ReadTimeout("slow", request=request)
+
+    with pytest.raises(ModelTimeout) as info:
+        _model(handler).complete([{"role": "user", "content": "hi"}], timeout=3, max_retries=0)
+    assert isinstance(info.value, ModelUnavailable)
+    assert str(info.value) == "APITimeoutError"

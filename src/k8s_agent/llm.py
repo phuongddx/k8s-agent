@@ -17,6 +17,10 @@ class ModelUnavailable(Exception):
     """The model failed after the retry."""
 
 
+class ModelTimeout(ModelUnavailable):
+    """The model call ran past its time limit (the SDK's own retry included)."""
+
+
 @dataclass(frozen=True)
 class ToolCall:
     id: str
@@ -52,7 +56,16 @@ def _arguments_json(call: ToolCall) -> str:
 
 
 class ChatModel(Protocol):
-    def complete(self, messages: list[dict], tools: list[dict] | None = None) -> ModelReply: ...
+    """`timeout` (seconds) caps this call, and `max_retries` overrides the SDK retry count for it.
+    None keeps the adapter's defaults."""
+
+    def complete(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+    ) -> ModelReply: ...
 
 
 class OpenAIChatModel:
@@ -71,12 +84,22 @@ class OpenAIChatModel:
         self._client = openai.OpenAI(**kwargs)
         self._model = model
 
-    def complete(self, messages: list[dict], tools: list[dict] | None = None) -> ModelReply:
+    def complete(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+    ) -> ModelReply:
         kwargs: dict = {"model": self._model, "messages": messages, "temperature": 0.2}
         if tools:
             kwargs["tools"] = tools
+        options = {k: v for k, v in (("timeout", timeout), ("max_retries", max_retries)) if v is not None}
+        client = self._client.with_options(**options) if options else self._client
         try:
-            response = self._client.chat.completions.create(**kwargs)
+            response = client.chat.completions.create(**kwargs)
+        except openai.APITimeoutError as exc:
+            raise ModelTimeout(type(exc).__name__) from exc
         except openai.APIError as exc:
             raise ModelUnavailable(type(exc).__name__) from exc
         if not response.choices:

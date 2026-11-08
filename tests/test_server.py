@@ -9,6 +9,7 @@ import uvicorn
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
+from k8s_agent import graph as graph_module
 from k8s_agent import server
 from k8s_agent.graph import DeadlineExceeded, build_graph, run_diagnosis
 from k8s_agent.logs import configure_logging
@@ -251,6 +252,13 @@ def test_graph_gets_a_deadline_before_the_outer_limit(monkeypatch, tmp_path):
     assert rec.settings.budgets.graph_seconds == 150  # the settings (and the outer limit) are untouched
 
 
+def test_graph_caps_model_calls_with_the_configured_model_timeout(monkeypatch, tmp_path):
+    rec = Recorder(monkeypatch, tmp_path)
+    rec.settings = dataclasses.replace(rec.settings, model_timeout_seconds=25)
+    build_service(rec.settings)
+    assert rec.deps.model_timeout == 25
+
+
 @pytest.mark.anyio
 async def test_slow_diagnosis_times_out_and_frees_the_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "GRAPH_MARGIN_SECONDS", 0.5)
@@ -266,9 +274,11 @@ async def test_slow_diagnosis_times_out_and_frees_the_lock(monkeypatch, tmp_path
 
 
 @pytest.mark.anyio
-async def test_real_graph_stops_before_a_second_model_call_and_frees_the_lock(tmp_path):
+async def test_real_graph_stops_before_a_second_model_call_and_frees_the_lock(monkeypatch, tmp_path):
     """The inner deadline (0.5 s) passes during the first model call (0.7 s). The graph must not start the
-    re-ask, so the worker returns at about 0.7 s, before the outer limit (1.0 s)."""
+    re-ask, so the worker returns at about 0.7 s, before the outer limit (1.0 s). The 5 s model reserve is
+    switched off: this test is about a scripted call that ignores its timeout."""
+    monkeypatch.setattr(graph_module, "MODEL_RESERVE_SECONDS", 0)
     sleeps = []
 
     def slow_call():

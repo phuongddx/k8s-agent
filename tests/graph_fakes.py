@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx2
 
 from k8s_agent.graph import Deps
-from k8s_agent.llm import ModelReply, ToolCall
+from k8s_agent.llm import ModelReply, ModelTimeout, ToolCall
 from k8s_agent.proposals import ProposalStore
 from k8s_agent.render import RenderError
 from k8s_agent.repo import Workspace
@@ -34,7 +34,7 @@ class ScriptedModel:
         self.tools_offered: list[list[dict] | None] = []
         self.on_call = on_call
 
-    def complete(self, messages, tools=None):
+    def complete(self, messages, tools=None, timeout=None, max_retries=None):
         self.sent.append(copy.deepcopy(messages))
         self.tools_offered.append(tools)
         if self.on_call:
@@ -44,6 +44,26 @@ class ScriptedModel:
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
+        return reply
+
+
+class TimedModel:
+    """A ChatModel that lives on a FakeClock. Each scripted reply takes `duration` seconds. A call whose
+    per-call `timeout` is shorter than that raises ModelTimeout after exactly `timeout` seconds, as the
+    real adapter does. Records (clock at call, timeout, max_retries) for every call."""
+
+    def __init__(self, clock, script) -> None:
+        self.clock = clock
+        self.script = list(script)
+        self.calls: list[tuple[float, float | None, int | None]] = []
+
+    def complete(self, messages, tools=None, timeout=None, max_retries=None):
+        self.calls.append((self.clock.now, timeout, max_retries))
+        duration, reply = self.script.pop(0)
+        if timeout is not None and duration > timeout:
+            self.clock.now += timeout
+            raise ModelTimeout("APITimeoutError")
+        self.clock.now += duration
         return reply
 
 
