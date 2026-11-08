@@ -49,8 +49,10 @@ class ScriptedModel:
 
 class TimedModel:
     """A ChatModel that lives on a FakeClock. Each scripted reply takes `duration` seconds. A call whose
-    per-call `timeout` is shorter than that raises ModelTimeout after exactly `timeout` seconds, as the
-    real adapter does. Records (clock at call, timeout, max_retries) for every call."""
+    per-call `timeout` is shorter than that raises a retryable ModelTimeout after exactly `timeout` seconds,
+    as the real adapter does. A scripted Exception is raised after `duration`. Records (clock at call,
+    timeout, max_retries) for every call. The fake never retries on its own: that is the graph's job, and
+    `max_retries` is recorded so tests can assert the graph switched the SDK retry off."""
 
     def __init__(self, clock, script) -> None:
         self.clock = clock
@@ -62,8 +64,10 @@ class TimedModel:
         duration, reply = self.script.pop(0)
         if timeout is not None and duration > timeout:
             self.clock.now += timeout
-            raise ModelTimeout("APITimeoutError")
+            raise ModelTimeout("APITimeoutError", retryable=True)
         self.clock.now += duration
+        if isinstance(reply, Exception):
+            raise reply
         return reply
 
 

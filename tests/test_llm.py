@@ -188,3 +188,57 @@ def test_a_timed_out_call_raises_model_timeout():
         _model(handler).complete([{"role": "user", "content": "hi"}], timeout=3, max_retries=0)
     assert isinstance(info.value, ModelUnavailable)
     assert str(info.value) == "APITimeoutError"
+
+
+def _failure(status=None, headers=None, exc=None):
+    def handler(request):
+        if exc:
+            raise exc(request)
+        return httpx2.Response(status, json={"error": {"message": "x"}}, headers=headers or {})
+
+    return handler
+
+
+def _fails_with(handler):
+    with pytest.raises(ModelUnavailable) as info:
+        _model(handler).complete([{"role": "user", "content": "hi"}], max_retries=0)
+    return info.value
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503])
+def test_retryable_http_failures_are_marked_retryable(status):
+    assert _fails_with(_failure(status)).retryable is True
+
+
+@pytest.mark.parametrize("status", [400, 401, 404])
+def test_other_http_failures_are_not_retryable(status):
+    err = _fails_with(_failure(status))
+    assert err.retryable is False and err.retry_after is None
+
+
+def test_timeouts_and_connection_errors_are_retryable():
+    timeout = _fails_with(_failure(exc=lambda r: httpx2.ReadTimeout("slow", request=r)))
+    assert isinstance(timeout, ModelTimeout) and timeout.retryable is True
+    conn = _fails_with(_failure(exc=lambda r: httpx2.ConnectError("refused", request=r)))
+    assert not isinstance(conn, ModelTimeout) and conn.retryable is True
+
+
+def test_retry_after_headers_are_parsed_into_seconds():
+    assert _fails_with(_failure(429, {"retry-after": "60"})).retry_after == 60.0
+    assert _fails_with(_failure(429, {"retry-after-ms": "250"})).retry_after == 0.25
+    assert _fails_with(_failure(429, {"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"})).retry_after is None
+
+
+def test_per_call_options_keep_the_injected_http_client():
+    http = httpx2.Client(transport=httpx2.MockTransport(lambda r: httpx2.Response(500)))
+    model = OpenAIChatModel("https://api.z.ai/api/coding/paas/v4", "zai-key", "glm-5.3", http_client=http)
+    copy = model._client.with_options(timeout=5, max_retries=0)
+    assert copy._client is http
+
+
+def test_per_call_options_keep_proxy_environment_ignored(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    model = OpenAIChatModel("https://api.z.ai/api/coding/paas/v4", "zai-key", "glm-5.3")
+    copy = model._client.with_options(timeout=5, max_retries=0)
+    assert copy._client is model._client._client
+    assert copy._client._trust_env is False and copy._client._mounts == {}

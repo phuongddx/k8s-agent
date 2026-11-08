@@ -14,7 +14,13 @@ import openai
 
 
 class ModelUnavailable(Exception):
-    """The model failed after the retry."""
+    """The model call failed. `retryable` marks transient failures (timeout, connection error, 429, 5xx);
+    `retry_after` is the server's Retry-After in seconds, when it sent one."""
+
+    def __init__(self, message: str = "", *, retryable: bool = False, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
 
 
 class ModelTimeout(ModelUnavailable):
@@ -99,7 +105,16 @@ class OpenAIChatModel:
         try:
             response = client.chat.completions.create(**kwargs)
         except openai.APITimeoutError as exc:
-            raise ModelTimeout(type(exc).__name__) from exc
+            raise ModelTimeout(type(exc).__name__, retryable=True) from exc
+        except openai.APIConnectionError as exc:
+            raise ModelUnavailable(type(exc).__name__, retryable=True) from exc
+        except openai.APIStatusError as exc:
+            status = exc.status_code
+            raise ModelUnavailable(
+                type(exc).__name__,
+                retryable=status == 429 or status >= 500,
+                retry_after=_retry_after(exc.response.headers),
+            ) from exc
         except openai.APIError as exc:
             raise ModelUnavailable(type(exc).__name__) from exc
         if not response.choices:
@@ -127,6 +142,16 @@ class OpenAIChatModel:
             prompt_tokens=usage.prompt_tokens if usage else 0,
             completion_tokens=usage.completion_tokens if usage else 0,
         )
+
+
+def _retry_after(headers) -> float | None:
+    """The server's Retry-After (retry-after-ms, or whole seconds) in seconds; HTTP dates are ignored."""
+    for name, scale in (("retry-after-ms", 1000), ("retry-after", 1)):
+        try:
+            return max(0.0, float(headers[name]) / scale)
+        except (KeyError, ValueError):
+            continue
+    return None
 
 
 def parse_json_object(text: str | None) -> dict:

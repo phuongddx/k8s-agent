@@ -505,7 +505,7 @@ def test_model_calls_never_outlast_the_graph_deadline(tmp_path):
     assert result["cause"] == CRASH_DIAG["cause"]
 
 
-def test_sdk_retry_is_disabled_when_two_attempts_do_not_fit(tmp_path):
+def test_every_graph_model_call_switches_the_sdk_retry_off(tmp_path):
     nodes = tool_calls(("top_nodes", {}))
     clock = FakeClock()
     model = TimedModel(
@@ -513,18 +513,13 @@ def test_sdk_retry_is_disabled_when_two_attempts_do_not_fit(tmp_path):
         [
             (10, as_json(CRASH_INTAKE)),
             (30, nodes),
-            (30, nodes),
-            (25, nodes),
             (10, text("done")),
             (5, as_json({**CRASH_DIAG, "fix_kind": "unknown"})),
         ],
     )
-    deps = make_deps(
-        tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(investigate_seconds=100, graph_seconds=120)
-    )
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock)  # 150 s: plenty of time
     run(deps)
-    # 115 s and 105 s of usable time fit two 40 s attempts; 75 s and less do not.
-    assert [r for _, _, r in model.calls] == [None, None, 0, 0, 0, 0]
+    assert [r for _, _, r in model.calls] == [0, 0, 0, 0]
 
 
 def test_slow_final_diagnose_call_returns_a_low_confidence_diagnosis(tmp_path):
@@ -539,7 +534,8 @@ def test_slow_final_diagnose_call_returns_a_low_confidence_diagnosis(tmp_path):
     assert clock.now == 95
     assert stats["budget_hit"] is True
     assert result["confidence"] == "low" and result["fix_kind"] == "unknown"
-    assert result["cause"].startswith("Budget hit (12 tool calls or 90 s)")
+    assert stats["time_hit"] is True
+    assert result["cause"].startswith("Budget hit (12 tool calls or 90 s) and the time limit was reached")
     assert "did not finish in time" in result["cause"]
     assert {"source": "tools", "detail": "Tools called: top_nodes x12"} in result["evidence"]
 
@@ -565,14 +561,117 @@ def test_intake_makes_no_model_call_without_time(tmp_path):
     assert model.calls == []
 
 
-def test_a_timed_out_investigate_call_hands_over_to_diagnose(tmp_path):
+def test_a_capped_investigate_timeout_hands_over_to_diagnose_as_a_time_hit(tmp_path):
     clock = FakeClock()
-    model = TimedModel(
-        clock,
-        [(5, as_json(CRASH_INTAKE)), (100, text("never arrives")), (5, as_json({**CRASH_DIAG, "fix_kind": "unknown"}))],
-    )
-    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(graph_seconds=60))
+    model = TimedModel(clock, [(5, as_json(CRASH_INTAKE)), (100, text("never arrives"))])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(graph_seconds=30))
     result, stats = run(deps)
-    assert stats["budget_hit"] is True
-    assert result["confidence"] == "low" and result["cause"].startswith("Budget hit")
-    assert [t for _, t, _ in model.calls] == [40, 40, 10]
+    assert stats["time_hit"] is True and stats["budget_hit"] is False
+    assert result["confidence"] == "low"
+    assert result["cause"].startswith("Time limit reached before the investigation finished;")
+    assert [t for _, t, _ in model.calls] == [25, 20]  # both capped; diagnose then had no time for a call
+
+
+def _unavailable(retry_after=None):
+    return ModelUnavailable("APIStatusError", retryable=True, retry_after=retry_after)
+
+
+def _diagnose_phase(tmp_path, diagnose_script, graph_seconds=150):
+    """Intake and a one-shot investigate take 1 s each; then `diagnose_script` plays. Returns (model, deps, sleeps)."""
+    clock = FakeClock()
+    model = TimedModel(clock, [(1, as_json(CRASH_INTAKE)), (1, text("done")), *diagnose_script])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(graph_seconds=graph_seconds))
+    sleeps = []
+    deps.sleep = lambda seconds: (sleeps.append(seconds), setattr(clock, "now", clock.now + seconds))
+    return model, deps, sleeps
+
+
+def test_a_transient_failure_is_retried_once_at_graph_level(tmp_path):
+    model, deps, sleeps = _diagnose_phase(
+        tmp_path, [(1, _unavailable()), (1, as_json(CRASH_DIAG | {"fix_kind": "none"}))]
+    )
+    result, stats = run(deps)
+    assert result["cause"] == CRASH_DIAG["cause"] and result["confidence"] == "high"
+    assert stats["time_hit"] is False and stats["budget_hit"] is False
+    assert len(model.calls) == 4 and len(sleeps) == 1
+    assert [r for _, _, r in model.calls] == [0, 0, 0, 0]  # the SDK never retries behind the graph's back
+
+
+def test_a_second_transient_failure_is_not_retried_again(tmp_path):
+    model, deps, sleeps = _diagnose_phase(
+        tmp_path, [(1, _unavailable()), (1, _unavailable()), (1, as_json(CRASH_DIAG))]
+    )
+    with pytest.raises(ModelUnavailable):
+        run(deps)
+    assert len(model.calls) == 4 and len(sleeps) == 1
+
+
+def test_a_non_retryable_failure_is_not_retried(tmp_path):
+    model, deps, sleeps = _diagnose_phase(
+        tmp_path, [(1, ModelUnavailable("AuthenticationError")), (1, as_json(CRASH_DIAG))]
+    )
+    with pytest.raises(ModelUnavailable):
+        run(deps)
+    assert len(model.calls) == 3 and sleeps == []
+
+
+def test_a_retry_after_that_does_not_fit_is_not_waited_for(tmp_path):
+    # Diagnose starts at t=2 with 50 s usable. A 429 with Retry-After: 60 cannot be honoured.
+    model, deps, sleeps = _diagnose_phase(tmp_path, [(1, _unavailable(retry_after=60)), (1, as_json(CRASH_DIAG))], 57)
+    result, stats = run(deps)  # not TIMEOUT
+    assert len(model.calls) == 3 and sleeps == []
+    assert stats["time_hit"] is True and stats["budget_hit"] is False
+    assert result["confidence"] == "low"
+    assert result["cause"].startswith("Time limit reached before the investigation finished;")
+
+
+def test_a_retry_after_that_fits_is_honoured(tmp_path):
+    model, deps, sleeps = _diagnose_phase(
+        tmp_path, [(1, _unavailable(retry_after=7)), (1, as_json(CRASH_DIAG | {"fix_kind": "none"}))]
+    )
+    result, _ = run(deps)
+    assert sleeps == [7] and result["confidence"] == "high"
+
+
+def test_an_uncapped_timeout_is_a_model_outage(tmp_path):
+    # 150 s left: the 40 s timeout is not a cap, so two timeouts in a row mean the model is down.
+    model, deps, _ = _diagnose_phase(tmp_path, [(100, as_json(CRASH_DIAG)), (100, as_json(CRASH_DIAG))])
+    with pytest.raises(ModelUnavailable) as info:
+        run(deps)
+    assert type(info.value) is ModelUnavailable
+    assert [t for _, t, _ in model.calls][2:] == [40, 40]
+
+
+def test_a_capped_diagnose_timeout_is_a_time_hit_not_a_budget_hit(tmp_path):
+    # Diagnose starts at t=2 with 30 s usable (cap < 40 s) and the model takes 90 s.
+    model, deps, _ = _diagnose_phase(tmp_path, [(90, as_json(CRASH_DIAG))], graph_seconds=37)
+    result, stats = run(deps)
+    assert model.calls[-1][1] == 30
+    assert stats["time_hit"] is True and stats["budget_hit"] is False
+    assert result["confidence"] == "low" and result["fix_kind"] == "unknown"
+    assert result["cause"].startswith("Time limit reached before the investigation finished;")
+    assert "Budget hit" not in result["cause"]
+
+
+def test_a_capped_intake_failure_takes_the_timeout_path(tmp_path):
+    clock = FakeClock()
+    model = TimedModel(clock, [(100, as_json(CRASH_INTAKE))])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model, clock=clock, budgets=Budgets(graph_seconds=30))
+    with pytest.raises(DeadlineExceeded):
+        run(deps)
+
+
+def test_a_capped_propose_fix_timeout_says_not_enough_time(tmp_path):
+    # The fix plan call starts at t=3 with 22 s usable (capped) and the model takes 100 s.
+    model, deps, _ = _diagnose_phase(tmp_path, [(1, as_json(CRASH_DIAG)), (100, as_json(FIX_PLAN))], graph_seconds=30)
+    result, _ = run(deps)
+    _assert_diagnosis_kept(result, "not enough time left to prepare a fix")
+    assert "unavailable" not in result["fix_summary"]
+
+
+def test_an_uncapped_propose_fix_timeout_says_the_model_was_unavailable(tmp_path):
+    model, deps, _ = _diagnose_phase(
+        tmp_path, [(1, as_json(CRASH_DIAG)), (100, as_json(FIX_PLAN)), (100, as_json(FIX_PLAN))]
+    )
+    result, _ = run(deps)
+    _assert_diagnosis_kept(result, "the model was unavailable while preparing the fix")

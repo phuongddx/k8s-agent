@@ -21,6 +21,7 @@ ALLOWED_FIELDS = frozenset(
         "completion_tokens",
         "calls",
         "budget_hit",
+        "time_hit",
         "outcome",
         "status",
         "path",
