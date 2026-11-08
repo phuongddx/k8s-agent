@@ -15,7 +15,7 @@ def _streams(*values):
         "status": "success",
         "data": {
             "resultType": "streams",
-            "result": [{"stream": {"namespace": "kube-system", "app": "traefik"}, "values": list(values)}],
+            "result": [{"stream": {"namespace": "kube-system", "container": "traefik"}, "values": list(values)}],
         },
     }
 
@@ -28,10 +28,10 @@ def test_query_range_params_and_flattening():
         seen["params"] = dict(request.url.params)
         return httpx2.Response(200, json=_streams(["1762336790000000000", "b"], ["1762336780000000000", "a"]))
 
-    out = _client(handler).query('{app="traefik"} |= "502"', now=NOW)
+    out = _client(handler).query('{container="traefik"} |= "502"', now=NOW)
     assert seen["path"] == "/loki/api/v1/query_range"
     p = seen["params"]
-    assert p["query"] == '{app="traefik"} |= "502"'
+    assert p["query"] == '{container="traefik"} |= "502"'
     assert p["direction"] == "backward"
     assert p["limit"] == "200"
     assert int(p["end"]) - int(p["start"]) == 3600 * 10**9

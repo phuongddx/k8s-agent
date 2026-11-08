@@ -199,7 +199,7 @@ def test_loki_unavailable_is_noted_in_evidence(tmp_path):
     model = ScriptedModel(
         [
             as_json(CRASH_INTAKE),
-            tool_calls(("loki_query", {"query": '{app="traefik"}'})),
+            tool_calls(("loki_query", {"query": '{container="traefik"}'})),
             text("Loki down."),
             as_json({**CRASH_DIAG, "fix_kind": "unknown"}),
         ]

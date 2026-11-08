@@ -118,7 +118,7 @@ def loki_transport(lines: list[tuple[str, str]], up: bool = True) -> httpx2.Mock
         values = [
             [str(int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1e9)), line] for ts, line in lines
         ]
-        result = [{"stream": {"namespace": "kube-system", "app": "traefik"}, "values": values}] if values else []
+        result = [{"stream": {"namespace": "kube-system", "container": "traefik"}, "values": values}] if values else []
         return httpx2.Response(200, json={"status": "success", "data": {"resultType": "streams", "result": result}})
 
     return httpx2.MockTransport(handler)

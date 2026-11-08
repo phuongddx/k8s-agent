@@ -69,7 +69,7 @@ def test_errors_are_returned_as_results(box):
 
 def test_loki_unavailable_is_flagged(box):
     assert box.loki_unavailable is False
-    out = json.loads(box.call("loki_query", {"query": '{app="traefik"}'}))
+    out = json.loads(box.call("loki_query", {"query": '{container="traefik"}'}))
     assert "Loki is unavailable" in out["error"]
     assert box.loki_unavailable is True
     box.reset()
@@ -206,3 +206,12 @@ def test_forbidden_ingresses_become_a_readable_tool_error(tmp_path):
     tb = Toolbox(ClusterTools(FakeKube({}, forbidden=forbidden)), loki, ws)
     for args in ({}, {"namespace": "x"}):
         assert json.loads(tb.call("get_ingresses", args)) == {"error": "Kubernetes API 403: forbidden"}
+
+
+def test_loki_query_hint_names_the_real_labels():
+    [spec] = [t["function"] for t in TOOL_SPECS if t["function"]["name"] == "loki_query"]
+    hint = spec["description"]
+    assert 'app="traefik"' not in hint
+    assert "Labels: namespace, pod, container, cluster." in hint
+    assert '{namespace="kube-system", container="traefik"}' in hint
+    assert "Traefik access logs are not enabled" in hint

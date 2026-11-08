@@ -100,7 +100,8 @@ TOOL_SPECS = [
     _spec(
         "loki_query",
         "LogQL query over Loki (7-day retention). Window `hours` defaults to 1, max 168. "
-        'Traefik access logs: {namespace="kube-system", app="traefik"}.',
+        "Labels: namespace, pod, container, cluster. "
+        'Traefik logs: {namespace="kube-system", container="traefik"} (Traefik access logs are not enabled).',
         {"query": _S, "hours": _I, "limit": _I},
         ("query",),
     ),
