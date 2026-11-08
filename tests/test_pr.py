@@ -120,6 +120,18 @@ def test_paths_are_rechecked_before_commit(env):
     assert env["stub"].requests == []
 
 
+def test_a_diff_touching_the_agents_own_manifests_never_opens_a_pr(env):
+    ws, store = env["ws"], env["store"]
+    ws.write_file("apps/x/base/cm.yaml", "changed\n")
+    own = ws.diff().replace("apps/x/base/cm.yaml", "apps/k8s-agent/base/cm.yaml")
+    ws.reset("origin/main")
+    p = store.add(diff=own, base_sha=ws.head(), service="x", summary="s", question="q", cause="c", evidence=[])
+    out = env["opener"].open_pr(p.id)
+    assert "the agent may not change its own manifests" in out["error"]
+    assert env["stub"].requests == []
+    assert env["renderer"].rendered == []
+
+
 def test_render_failure_blocks_the_pr(env):
     env["renderer"].fail_times = 1
     out = env["opener"].open_pr(env["proposal"].id)

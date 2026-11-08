@@ -246,6 +246,17 @@ def test_path_outside_apps_is_rejected_without_diff(tmp_path):
     assert "outside apps" in result["fix_summary"]
 
 
+def test_edit_to_the_agents_own_manifests_is_rejected_without_diff(tmp_path):
+    plan = {"summary": "x", "edits": [{"path": "apps/k8s-agent/base/rbac.yaml", "content": "kind: Role\n"}]}
+    model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG), as_json(plan)])
+    deps = make_deps(tmp_path, scenarios.crashloop(), model)
+    result, _ = run(deps)
+    assert "diff" not in result and "proposal_id" not in result
+    assert "may not change its own manifests" in result["fix_summary"]
+    assert deps.store._items == {}
+    assert not (deps.workspace.path / "apps/k8s-agent").exists()
+
+
 def test_render_failure_gets_one_repair_attempt(tmp_path):
     renderer = FakeRenderer(fail_times=1)
     model = ScriptedModel([as_json(CRASH_INTAKE), text("x"), as_json(CRASH_DIAG), as_json(FIX_PLAN), as_json(FIX_PLAN)])

@@ -91,6 +91,22 @@ def test_write_outside_apps_is_refused(ws):
         w.write_file("scripts/validate.sh", "evil")
 
 
+def test_write_to_the_agents_own_manifests_is_refused(ws):
+    w, _, _ = ws
+    with pytest.raises(RepoError, match="may not change its own manifests"):
+        w.write_file("apps/k8s-agent/base/rbac.yaml", "evil")
+    assert not (w.path / "apps/k8s-agent").exists()
+
+
+def test_write_through_a_symlink_into_the_agents_manifests_is_refused(ws):
+    w, _, _ = ws
+    (w.path / "apps/k8s-agent/base").mkdir(parents=True)
+    (w.path / "apps/x/own").symlink_to(w.path / "apps/k8s-agent/base")
+    with pytest.raises(RepoError, match="may not change its own manifests"):
+        w.write_file("apps/x/own/rbac.yaml", "evil")
+    assert not (w.path / "apps/k8s-agent/base/rbac.yaml").exists()
+
+
 def test_commit_and_push_creates_branch_on_origin(ws):
     w, bare, tmp = ws
     w.write_file("apps/x/base/cm.yaml", "new\n")

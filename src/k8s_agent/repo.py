@@ -7,7 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from k8s_agent.diffcheck import is_allowed
+from k8s_agent.diffcheck import OWN_MANIFESTS, is_allowed, is_own_manifest
 
 _CREDENTIAL_HELPER = (
     '!f() { test "$1" = get && printf \'username=x-access-token\\npassword=%s\\n\' "$K8S_AGENT_GIT_TOKEN"; }; f'
@@ -140,11 +140,15 @@ class Workspace:
         return commits
 
     def write_file(self, rel: str, content: str) -> None:
+        if is_own_manifest(rel):
+            raise RepoError(f"{rel}: {OWN_MANIFESTS}")
         if not is_allowed(rel):
             raise RepoError(f"{rel} is outside apps/**")
         target = self.resolve(rel)
         # The allowlist must hold for the resolved location: a symlinked parent can move the write out of apps/.
         resolved_rel = target.relative_to(self.path.resolve()).as_posix()
+        if is_own_manifest(resolved_rel):
+            raise RepoError(f"{rel} resolves to {resolved_rel}: {OWN_MANIFESTS}")
         if not is_allowed(resolved_rel):
             raise RepoError(f"{rel} is outside apps/**")
         # resolve() follows links, so only the leaf itself can still be a symlink here.

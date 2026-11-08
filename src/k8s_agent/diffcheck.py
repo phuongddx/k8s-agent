@@ -7,15 +7,26 @@ _DIFF_GIT = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
 _HEADER_PREFIXES = ("rename from ", "rename to ", "copy from ", "copy to ")
 
 
+SELF_SERVICE = "k8s-agent"
+OWN_MANIFESTS = f"the agent may not change its own manifests (apps/{SELF_SERVICE}/)"
+
+
 class PathNotAllowed(ValueError):
-    """A path is outside `apps/<service>/`, or the change spans several services."""
+    """A path is outside `apps/<service>/`, is the agent's own service, or the change spans several services."""
+
+
+def is_own_manifest(path: str) -> bool:
+    """True for apps/k8s-agent/**: the agent's own manifests and RBAC, which it must never change."""
+    parts = PurePosixPath(path).parts
+    return len(parts) >= 2 and parts[0] == "apps" and parts[1].lower() == SELF_SERVICE
 
 
 def is_allowed(path: str) -> bool:
     if not path or path.startswith(("/", '"')) or "\\" in path:
         return False
     parts = PurePosixPath(path).parts
-    return len(parts) >= 3 and parts[0] == "apps" and all(p not in ("..", ".", ".git") for p in parts)
+    ok = len(parts) >= 3 and parts[0] == "apps" and all(p not in ("..", ".", ".git") for p in parts)
+    return ok and not is_own_manifest(path)
 
 
 def paths_in_diff(diff: str) -> list[str]:
@@ -41,6 +52,9 @@ def check_paths(paths: list[str]) -> str:
     """Return the single service the paths belong to, or raise PathNotAllowed."""
     if not paths:
         raise PathNotAllowed("the change touches no files")
+    own = [p for p in paths if is_own_manifest(p)]
+    if own:
+        raise PathNotAllowed(f"{OWN_MANIFESTS}: {', '.join(sorted(own))}")
     bad = [p for p in paths if not is_allowed(p)]
     if bad:
         raise PathNotAllowed(f"paths outside apps/**: {', '.join(sorted(bad))}")
