@@ -1,4 +1,4 @@
-"""The fifteen tools the investigate step may call: schemas for the model and one dispatcher.
+"""The sixteen tools the investigate step may call: schemas for the model and one dispatcher.
 
 Errors (forbidden, not found, bad arguments, Loki down) become the tool result, so the model
 can adapt; they never abort the diagnosis."""
@@ -79,6 +79,12 @@ TOOL_SPECS = [
         ("namespace", "name"),
     ),
     _spec("get_ingressroutes", "Traefik IngressRoutes: host match rules, services and middlewares.", {"namespace": _S}),
+    _spec(
+        "get_ingresses",
+        "Kubernetes Ingresses (networking.k8s.io/v1): class, hosts, path to backend service:port, TLS hosts. "
+        "Cluster-wide, or one namespace.",
+        {"namespace": _S},
+    ),
     _spec(
         "get_endpoints",
         "Ready and not-ready endpoint addresses of a Service.",

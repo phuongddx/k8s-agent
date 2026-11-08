@@ -110,6 +110,83 @@ def test_5xx_route_to_unready_endpoints():
     assert ep["not_ready"] == [{"ip": "10.42.0.31", "pod": "keycloak-59d7c-p0o9i", "ports": [8080]}]
 
 
+def _ingress_snapshot():
+    web = scenarios.ingress("dropitx-api", "dropitx-api", "api.example.test", "dropitx-api", 8080, path="/api")
+    web["spec"]["rules"].append(
+        {
+            "host": "www.example.test",
+            "http": {"paths": [{"backend": {"service": {"name": "web", "port": {"name": "http"}}}}]},
+        }
+    )
+    other = scenarios.ingress("auth", "keycloak", "sso.example.test", "keycloak", 8080)
+    return {
+        "/apis/networking.k8s.io/v1/ingresses": {"items": [web, other]},
+        "/apis/networking.k8s.io/v1/namespaces/auth/ingresses": {"items": [other]},
+    }
+
+
+def test_get_ingresses_summarises_hosts_paths_backends_and_tls():
+    t = ClusterTools(FakeKube(_ingress_snapshot()))
+    out = {(i["namespace"], i["name"]): i for i in t.get_ingresses()}
+    assert set(out) == {("dropitx-api", "dropitx-api"), ("auth", "keycloak")}
+    web = out[("dropitx-api", "dropitx-api")]
+    assert web == {
+        "namespace": "dropitx-api",
+        "name": "dropitx-api",
+        "class": "traefik",
+        "hosts": ["api.example.test", "www.example.test"],
+        "paths": [
+            {"host": "api.example.test", "path": "/api", "backend": "dropitx-api:8080"},
+            {"host": "www.example.test", "path": "/", "backend": "web:http"},
+        ],
+        "tls_hosts": ["api.example.test"],
+    }
+    assert "annotations" not in str(web)
+
+
+def test_get_ingresses_filters_by_namespace_and_reads_only_that_path():
+    fake = FakeKube(_ingress_snapshot())
+    [only] = ClusterTools(fake).get_ingresses("auth")
+    assert only["name"] == "keycloak"
+    assert fake.calls == ["/apis/networking.k8s.io/v1/namespaces/auth/ingresses"]
+
+
+def test_get_ingresses_reports_the_default_backend_and_resource_backends():
+    snap = {
+        "/apis/networking.k8s.io/v1/ingresses": {
+            "items": [
+                {
+                    "metadata": {"namespace": "x", "name": "catch-all"},
+                    "spec": {
+                        "defaultBackend": {"service": {"name": "fallback", "port": {"number": 80}}},
+                        "rules": [
+                            {
+                                "http": {
+                                    "paths": [{"path": "/s", "backend": {"resource": {"kind": "Bucket", "name": "b"}}}]
+                                }
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    }
+    [ing] = ClusterTools(FakeKube(snap)).get_ingresses()
+    assert ing["class"] is None and ing["hosts"] == [] and ing["tls_hosts"] == []
+    assert ing["paths"] == [
+        {"host": None, "path": "*", "backend": "fallback:80"},
+        {"host": None, "path": "/s", "backend": "resource:Bucket/b"},
+    ]
+
+
+def test_get_ingresses_falls_back_to_the_class_annotation():
+    item = scenarios.ingress("x", "a", "h.example.test", "svc", 80)
+    del item["spec"]["ingressClassName"]
+    item["metadata"]["annotations"] = {"kubernetes.io/ingress.class": "nginx"}
+    snap = {"/apis/networking.k8s.io/v1/ingresses": {"items": [item]}}
+    assert ClusterTools(FakeKube(snap)).get_ingresses()[0]["class"] == "nginx"
+
+
 def test_events_keep_the_last_twenty_in_time_order():
     s = scenarios.healthy()
     s.snapshot["/api/v1/namespaces/openclaw/events"] = {
@@ -135,7 +212,7 @@ def test_configmap_and_missing_objects():
         t.describe_workload("dropitx-api", "dropitx-api", kind="Job")
 
 
-def test_registry_exposes_the_twelve_cluster_tools():
+def test_registry_exposes_the_thirteen_cluster_tools():
     assert sorted(tools_for(scenarios.healthy()).registry()) == sorted(
         [
             "list_workloads",
@@ -148,6 +225,7 @@ def test_registry_exposes_the_twelve_cluster_tools():
             "top_nodes",
             "rollout_status",
             "get_ingressroutes",
+            "get_ingresses",
             "get_endpoints",
             "get_configmap",
         ]
@@ -165,6 +243,7 @@ NAME_FIELDS = {
     "top_pods": ({"namespace": "llm-gateway"}, ["namespace"]),
     "rollout_status": ({"namespace": "llm-gateway", "name": "llm-gateway"}, ["namespace", "name"]),
     "get_ingressroutes": ({}, ["namespace"]),
+    "get_ingresses": ({}, ["namespace"]),
     "get_endpoints": ({"namespace": "auth", "name": "keycloak"}, ["namespace", "name"]),
     "get_configmap": ({"namespace": "dropitx-api", "name": "dropitx-api-config"}, ["namespace", "name"]),
 }

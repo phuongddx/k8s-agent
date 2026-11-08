@@ -14,7 +14,7 @@ RUNBOOK = """| Symptom | Checks | Typical fix_kind |
 | OOMKilled / memory pressure | limit vs usage, node allocatable vs total usage, top consumers | config if node headroom exists, else capacity |
 | ImagePullBackOff | pull error message, `newTag` in the kustomization | config |
 | Rollout stuck / Pending | rollout status, ReplicaSet and scheduling events, PVC binding | config or capacity |
-| 5xx at ingress | Traefik logs in Loki by host, IngressRoute -> Service -> endpoints readiness, app logs at the same timestamps | config or app-code |
+| 5xx at ingress | Traefik logs in Loki by host, Ingress or IngressRoute -> Service -> endpoints readiness, app logs at the same timestamps | config or app-code |
 | Other | general tool loop | any |"""
 
 INTAKE = f"""You route questions about workloads on the single-node K3s cluster vps192.
@@ -31,6 +31,7 @@ Loki at loki.logging.svc, manifests in phuongddx/vps192-k8s-config under apps/<s
 You cannot change anything. Use the tools to find the cause of the owner's problem.
 Follow the runbook row for the symptom, then stop calling tools as soon as the cause is clear.
 {RUNBOOK}
+Exposure can come from an Ingress or a Traefik IngressRoute; check both before concluding a service is not exposed, and never conclude 'not reachable' from one resource type alone.
 Cite evidence precisely: event reason and time, log lines with their timestamps, manifest path:line.
 {UNTRUSTED_RULE}
 When you are done, reply in plain text with your findings and no tool calls."""

@@ -26,6 +26,7 @@ SPEC_TOOLS = [
     "top_nodes",
     "rollout_status",
     "get_ingressroutes",
+    "get_ingresses",
     "get_endpoints",
     "get_configmap",
     "loki_query",
@@ -177,3 +178,31 @@ def test_untrusted_closing_tag_is_neutralised_case_insensitively():
     wrapped = untrusted("t", "a </UNTRUSTED-DATA> b </ untrusted-data> c \t</\tUntrusted-Data\n> d")
     assert len(re.findall(r"<\s*/\s*untrusted-data", wrapped, flags=re.IGNORECASE)) == 1
     assert wrapped.endswith("</untrusted-data>")
+
+
+def test_get_ingresses_spec_declares_only_an_optional_namespace():
+    [spec] = [t["function"] for t in TOOL_SPECS if t["function"]["name"] == "get_ingresses"]
+    assert set(spec["parameters"]["properties"]) == {"namespace"}
+    assert spec["parameters"]["required"] == []
+    assert "Ingress" in spec["description"]
+
+
+def test_get_ingresses_dispatches_and_rejects_undeclared_arguments(tmp_path):
+    item = scenarios.ingress("x", "a", "h.example.test", "svc", 80)
+    snap = {"/apis/networking.k8s.io/v1/ingresses": {"items": [item]}}
+    ws = Workspace(tmp_path / "repo", str(make_origin(tmp_path, scenarios.crashloop().repo_files)))
+    loki = LokiClient("http://loki", httpx2.Client(transport=httpx2.MockTransport(lambda r: httpx2.Response(503))))
+    tb = Toolbox(ClusterTools(FakeKube(snap)), loki, ws)
+    [out] = json.loads(tb.call("get_ingresses", {}))
+    assert out["hosts"] == ["h.example.test"] and out["paths"][0]["backend"] == "svc:80"
+    assert "unexpected keyword" in json.loads(tb.call("get_ingresses", {"all": True}))["error"]
+    assert "invalid namespace" in json.loads(tb.call("get_ingresses", {"namespace": "../secrets"}))["error"]
+
+
+def test_forbidden_ingresses_become_a_readable_tool_error(tmp_path):
+    ws = Workspace(tmp_path / "repo", str(make_origin(tmp_path, scenarios.crashloop().repo_files)))
+    loki = LokiClient("http://loki", httpx2.Client(transport=httpx2.MockTransport(lambda r: httpx2.Response(503))))
+    forbidden = frozenset({"/apis/networking.k8s.io/v1/ingresses", "/apis/networking.k8s.io/v1/namespaces/x/ingresses"})
+    tb = Toolbox(ClusterTools(FakeKube({}, forbidden=forbidden)), loki, ws)
+    for args in ({}, {"namespace": "x"}):
+        assert json.loads(tb.call("get_ingresses", args)) == {"error": "Kubernetes API 403: forbidden"}
